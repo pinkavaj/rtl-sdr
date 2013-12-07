@@ -985,16 +985,11 @@ static int r82xx_set_pll(struct r82xx_priv *priv, uint32_t freq)
 #endif
 
 	/* Calculate divider */
-	while (mix_div <= 64) {
-		if (((freq_khz * mix_div) >= vco_min) &&
-		   ((freq_khz * mix_div) < vco_max)) {
-			div_buf = mix_div;
-			while (div_buf > 2) {
-				div_buf = div_buf >> 1;
-				div_num++;
-			}
+	while (mix_div < 64) {
+		if ((freq_khz * mix_div) >= vco_min) {
 			break;
 		}
+		++div_num;
 		mix_div = mix_div << 1;
 	}
 
