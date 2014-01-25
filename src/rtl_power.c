@@ -148,7 +148,7 @@ void usage(void)
 		"\t  fir_size can be 0 or 9.  0 has bad roll off,\n"
 		"\t  try with '-c 50%%')\n"
 		"\t[-P enables peak hold (default: off)]\n"
-		"\t[-D enable direct sampling (default: off)]\n"
+		"\t[-D direct_sampling_mode, 0 (default/off), 1 (I), 2 (Q), 3 (no-mod)]\n"
 		"\t[-O enable offset tuning (default: off)]\n"
 		"\n"
 		"CSV FFT output columns:\n"
@@ -781,7 +781,7 @@ int main(int argc, char **argv)
 	double (*window_fn)(int, int) = rectangle;
 	freq_optarg = "";
 
-	while ((opt = getopt(argc, argv, "f:i:s:t:d:g:p:e:w:c:F:1PDOh")) != -1) {
+	while ((opt = getopt(argc, argv, "f:i:s:t:d:g:p:e:w:c:F:1PD:Oh")) != -1) {
 		switch (opt) {
 		case 'f': // lower:upper:bin_size
 			freq_optarg = strdup(optarg);
@@ -840,7 +840,7 @@ int main(int argc, char **argv)
 			peak_hold = 1;
 			break;
 		case 'D':
-			direct_sampling = 1;
+			direct_sampling = atoi(optarg);
 			break;
 		case 'O':
 			offset_tuning = 1;
@@ -908,7 +908,7 @@ int main(int argc, char **argv)
 #endif
 
 	if (direct_sampling) {
-		verbose_direct_sampling(dev, 1);
+		verbose_direct_sampling(dev, direct_sampling);
 	}
 
 	if (offset_tuning) {

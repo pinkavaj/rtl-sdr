@@ -174,6 +174,8 @@ int verbose_direct_sampling(rtlsdr_dev_t *dev, int on)
 		fprintf(stderr, "Enabled direct sampling mode, input 1/I.\n");}
 	if (on == 2) {
 		fprintf(stderr, "Enabled direct sampling mode, input 2/Q.\n");}
+	if (on == 3) {
+		fprintf(stderr, "Enabled no-mod direct sampling mode.\n");}
 	return r;
 }
 
