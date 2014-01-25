@@ -1208,6 +1208,9 @@ int main(int argc, char **argv)
 		verbose_gain_set(dongle.dev, dongle.gain);
 	}
 
+	if (!custom_ppm) {
+		verbose_ppm_eeprom(dongle.dev, &(dongle.ppm_error));
+	}
 	verbose_ppm_set(dongle.dev, dongle.ppm_error);
 
 	if (strcmp(output.filename, "-") == 0) { /* Write samples to stdout */

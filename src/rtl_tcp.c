@@ -374,6 +374,7 @@ int main(int argc, char **argv)
 	int dev_given = 0;
 	int gain = 0;
 	int ppm_error = 0;
+	int custom_ppm = 0;
 	struct llist *curelem,*prev;
 	pthread_attr_t attr;
 	void *status;
@@ -420,6 +421,7 @@ int main(int argc, char **argv)
 			break;
 		case 'P':
 			ppm_error = atoi(optarg);
+			custom_ppm = 1;
 			break;
 		default:
 			usage();
@@ -458,6 +460,9 @@ int main(int argc, char **argv)
 #endif
 
 	/* Set the tuner error */
+	if (!custom_ppm) {
+		verbose_ppm_eeprom(dev, &ppm_error);
+	}
 	verbose_ppm_set(dev, ppm_error);
 
 	/* Set the sample rate */
