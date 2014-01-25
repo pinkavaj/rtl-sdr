@@ -1138,13 +1138,36 @@ int rtlsdr_set_direct_sampling(rtlsdr_dev_t *dev, int on)
 	if (!dev)
 		return -1;
 
-	if (on) {
+	/* set up normal direct sampling */
+	if (on == 1 || on == 2) {
 		if (dev->tuner && dev->tuner->exit) {
 			rtlsdr_set_i2c_repeater(dev, 1);
 			r = dev->tuner->exit(dev);
 			rtlsdr_set_i2c_repeater(dev, 0);
 		}
+	}
 
+	/* set up no-mod direct sampling */
+	if (on == 3 && dev->tuner) {
+		if (dev->tuner_type == RTLSDR_TUNER_E4000) {
+			fprintf(stderr, "Tuning E4000 to 3708 MHz\n");
+			rtlsdr_set_i2c_repeater(dev, 1);
+			dev->tuner->init(dev);
+			dev->tuner->set_freq(dev, 3708000000u);
+			e4000_set_bw(dev, 15000000);
+			rtlsdr_set_i2c_repeater(dev, 0);
+		}
+		if (dev->tuner_type == RTLSDR_TUNER_R820T) {
+			rtlsdr_dev_t* devt = (rtlsdr_dev_t*)dev;
+			rtlsdr_set_i2c_repeater(dev, 1);
+			dev->tuner->init(dev);
+			r82xx_set_nomod(&devt->r82xx_p);
+			rtlsdr_set_i2c_repeater(dev, 0);
+		}
+	}
+
+	/* common to all direct modes */
+	if (on) {
 		/* disable Zero-IF mode */
 		r |= rtlsdr_demod_write_reg(dev, 1, 0xb1, 0x1a, 1);
 
@@ -1155,11 +1178,14 @@ int rtlsdr_set_direct_sampling(rtlsdr_dev_t *dev, int on)
 		r |= rtlsdr_demod_write_reg(dev, 0, 0x08, 0x4d, 1);
 
 		/* swap I and Q ADC, this allows to select between two inputs */
-		r |= rtlsdr_demod_write_reg(dev, 0, 0x06, (on > 1) ? 0x90 : 0x80, 1);
+		r |= rtlsdr_demod_write_reg(dev, 0, 0x06, (on == 2) ? 0x90 : 0x80, 1);
 
 		fprintf(stderr, "Enabled direct sampling mode, input %i\n", on);
 		dev->direct_sampling = on;
-	} else {
+	}
+
+	/* disable direct sampling */
+	if (!on) {
 		if (dev->tuner && dev->tuner->init) {
 			rtlsdr_set_i2c_repeater(dev, 1);
 			r |= dev->tuner->init(dev);
