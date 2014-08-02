@@ -32,7 +32,8 @@
 #define R82XX_CHECK_ADDR	0x00
 #define R82XX_CHECK_VAL		0x69
 
-#define R82XX_IF_FREQ		3570000
+#define R82XX_DEFAULT_IF_FREQ   6000000
+#define R82XX_DEFAULT_IF_BW     2000000
 
 #define REG_SHADOW_START	5
 #define NUM_REGS		30
@@ -118,5 +119,7 @@ int r82xx_set_freq(struct r82xx_priv *priv, uint32_t freq);
 int r82xx_set_gain(struct r82xx_priv *priv, int set_manual_gain, int gain);
 int r82xx_set_nomod(struct r82xx_priv *priv);
 int r82xx_set_dither(struct r82xx_priv *priv, int dither);
+int r82xx_set_bw(struct r82xx_priv *priv, uint32_t bw);
+int r82xx_set_if_freq(struct r82xx_priv *priv, uint32_t freq);
 
 #endif
