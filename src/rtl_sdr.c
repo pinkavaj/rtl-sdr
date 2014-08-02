@@ -56,6 +56,7 @@ void usage(void)
 		"\t[-n number of samples to read (default: 0, infinite)]\n"
 		"\t[-S force sync output (default: async)]\n"
 		"\t[-D direct_sampling_mode, 0 (default/off), 1 (I), 2 (Q), 3 (no-mod)]\n"
+		"\t[-N no dithering (default: use dithering)]\n"
 		"\tfilename (a '-' dumps samples to stdout)\n\n");
 	exit(1);
 }
@@ -115,6 +116,7 @@ int main(int argc, char **argv)
 	int ppm_error = 0;
 	int sync_mode = 0;
 	int direct_sampling = 0;
+	int dithering = 1;
 	FILE *file;
 	uint8_t *buffer;
 	int dev_index = 0;
@@ -123,7 +125,7 @@ int main(int argc, char **argv)
 	uint32_t samp_rate = DEFAULT_SAMPLE_RATE;
 	uint32_t out_block_size = DEFAULT_BUF_LENGTH;
 
-	while ((opt = getopt(argc, argv, "d:f:g:s:b:n:p:D:S")) != -1) {
+	while ((opt = getopt(argc, argv, "d:f:g:s:b:n:p:D:SN")) != -1) {
 		switch (opt) {
 		case 'd':
 			dev_index = verbose_device_search(optarg);
@@ -152,6 +154,9 @@ int main(int argc, char **argv)
 			break;
 		case 'D':
 			direct_sampling = atoi(optarg);
+			break;
+		case 'N':
+			dithering = 0;
 			break;
 		default:
 			usage();
@@ -202,6 +207,16 @@ int main(int argc, char **argv)
 #else
 	SetConsoleCtrlHandler( (PHANDLER_ROUTINE) sighandler, TRUE );
 #endif
+
+	if (!dithering) {
+		fprintf(stderr, "Disabling dithering...  ");
+		r = rtlsdr_set_dithering(dev, dithering);
+		if (r) {
+			fprintf(stderr, "failure\n");
+		} else {
+			fprintf(stderr, "success\n");
+		}
+	}
 
 	if (direct_sampling) {
 		verbose_direct_sampling(dev, direct_sampling);

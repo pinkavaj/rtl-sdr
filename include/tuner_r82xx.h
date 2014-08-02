@@ -84,6 +84,7 @@ struct r82xx_priv {
 	uint8_t				input;
 	int				has_lock;
 	int				init_done;
+	int				disable_dither;
 
 	/* Store current mode */
 	uint32_t			delsys;
@@ -116,5 +117,6 @@ int r82xx_init(struct r82xx_priv *priv);
 int r82xx_set_freq(struct r82xx_priv *priv, uint32_t freq);
 int r82xx_set_gain(struct r82xx_priv *priv, int set_manual_gain, int gain);
 int r82xx_set_nomod(struct r82xx_priv *priv);
+int r82xx_set_dither(struct r82xx_priv *priv, int dither);
 
 #endif
