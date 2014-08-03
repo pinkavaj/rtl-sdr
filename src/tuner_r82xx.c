@@ -460,7 +460,6 @@ static int r82xx_set_pll(struct r82xx_priv *priv, uint32_t freq)
 	uint32_t vco_min = 1770000;
 	uint32_t vco_max = vco_min * 2;
 	uint32_t freq_khz, pll_ref, pll_ref_khz;
-	uint16_t n_sdm = 2;
 	uint16_t sdm = 0;
 	uint8_t mix_div = 2;
 	uint8_t div_buf = 0;
@@ -492,6 +491,8 @@ static int r82xx_set_pll(struct r82xx_priv *priv, uint32_t freq)
 		return rc;
 
 	/* Calculate divider */
+	if(freq_khz < vco_min/64) vco_min /= 2;
+	if(freq_khz >= vco_max/2) vco_max *= 2;
 	while (mix_div <= 64) {
 		if (((freq_khz * mix_div) >= vco_min) &&
 		   ((freq_khz * mix_div) < vco_max)) {
@@ -505,14 +506,16 @@ static int r82xx_set_pll(struct r82xx_priv *priv, uint32_t freq)
 		mix_div = mix_div << 1;
 	}
 
-	rc = r82xx_read(priv, 0x00, data, sizeof(data));
-	if (rc < 0)
-		return rc;
-
 	if (priv->cfg->rafael_chip == CHIP_R828D)
 		vco_power_ref = 1;
 
+	/*
+	rc = r82xx_read(priv, 0x00, data, sizeof(data));
+	if (rc < 0)
+		return rc;
 	vco_fine_tune = (data[4] & 0x30) >> 4;
+	*/
+	vco_fine_tune = 2;
 
 	if (vco_fine_tune > vco_power_ref)
 		div_num = div_num - 1;
@@ -527,7 +530,10 @@ static int r82xx_set_pll(struct r82xx_priv *priv, uint32_t freq)
 	nint = vco_freq / (2 * pll_ref);
 	vco_fra = (vco_freq - 2 * pll_ref * nint) / 1000;
 
-	if (nint > ((128 / vco_power_ref) - 1)) {
+	if (priv->cfg->rafael_chip == CHIP_R828D && nint > 127) {
+		fprintf(stderr, "[R828D] No valid PLL values for %u Hz!\n", freq);
+		return -1;
+	} else if (nint > 76) {
 		fprintf(stderr, "[R82XX] No valid PLL values for %u Hz!\n", freq);
 		return -1;
 	}
@@ -553,15 +559,7 @@ static int r82xx_set_pll(struct r82xx_priv *priv, uint32_t freq)
 		return rc;
 
 	/* sdm calculator */
-	while (vco_fra > 1) {
-		if (vco_fra > (2 * pll_ref_khz / n_sdm)) {
-			sdm = sdm + 32768 / (n_sdm / 2);
-			vco_fra = vco_fra - 2 * pll_ref_khz / n_sdm;
-			if (n_sdm >= 0x8000)
-				break;
-		}
-		n_sdm <<= 1;
-	}
+	sdm = (((vco_freq<<16)+pll_ref) / (2*pll_ref)) & 0xFFFF;
 
 	rc = r82xx_write_reg(priv, 0x16, sdm >> 8);
 	if (rc < 0)
