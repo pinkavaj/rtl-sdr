@@ -286,11 +286,6 @@ static int r82xx_write(struct r82xx_priv *priv, uint8_t reg, const uint8_t *val,
 	return 0;
 }
 
-static int r82xx_write_reg(struct r82xx_priv *priv, uint8_t reg, uint8_t val)
-{
-	return r82xx_write(priv, reg, &val, 1);
-}
-
 static int r82xx_read_cache_reg(struct r82xx_priv *priv, int reg)
 {
 	reg -= REG_SHADOW_START;
@@ -299,6 +294,13 @@ static int r82xx_read_cache_reg(struct r82xx_priv *priv, int reg)
 		return priv->regs[reg];
 	else
 		return -1;
+}
+
+static int r82xx_write_reg(struct r82xx_priv *priv, uint8_t reg, uint8_t val)
+{
+	if (priv->reg_cache && r82xx_read_cache_reg(priv, reg) == val)
+		return 0;
+	return r82xx_write(priv, reg, &val, 1);
 }
 
 static int r82xx_write_reg_mask(struct r82xx_priv *priv, uint8_t reg, uint8_t val,
@@ -311,6 +313,8 @@ static int r82xx_write_reg_mask(struct r82xx_priv *priv, uint8_t reg, uint8_t va
 
 	val = (rc & ~bit_mask) | (val & bit_mask);
 
+	if (priv->reg_cache && r82xx_read_cache_reg(priv, reg) == val)
+		return 0;
 	return r82xx_write(priv, reg, &val, 1);
 }
 
@@ -1090,6 +1094,7 @@ int r82xx_standby(struct r82xx_priv *priv)
 	if (!priv->init_done)
 		return 0;
 
+	priv->reg_cache = 0;
 	rc = r82xx_write_reg(priv, 0x06, 0xb1);
 	if (rc < 0)
 		return rc;
@@ -1125,6 +1130,7 @@ int r82xx_standby(struct r82xx_priv *priv)
 	/* Force initial calibration */
 	priv->type = -1;
 
+	priv->reg_cache = 1;
 	return rc;
 }
 
@@ -1199,6 +1205,7 @@ int r82xx_init(struct r82xx_priv *priv)
 	priv->xtal_cap_sel = XTAL_HIGH_CAP_0P;
 
 	/* Initialize registers */
+	priv->reg_cache = 0;
 	rc = r82xx_write(priv, 0x05,
 			 r82xx_init_array, sizeof(r82xx_init_array));
 
@@ -1212,6 +1219,7 @@ int r82xx_init(struct r82xx_priv *priv)
 	rc |= r82xx_sysfreq_sel(priv, 0, TUNER_DIGITAL_TV, SYS_DVBT);
 
 	priv->init_done = 1;
+	priv->reg_cache = 1;
 
 err:
 	if (rc < 0)

@@ -86,6 +86,7 @@ struct r82xx_priv {
 	int				has_lock;
 	int				init_done;
 	int				disable_dither;
+	int				reg_cache;
 
 	/* Store current mode */
 	uint32_t			delsys;
