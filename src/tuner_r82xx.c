@@ -585,22 +585,19 @@ static int r82xx_set_pll(struct r82xx_priv *priv, uint32_t freq)
 			return rc;
 		if (data[2] & 0x40)
 			break;
+		if (i > 0)
+			break;
 
-		if (!i) {
-			/* Didn't lock. Increase VCO current */
-			rc = r82xx_write_reg_mask(priv, 0x12, 0x60, 0xe0);
-			if (rc < 0)
-				return rc;
-		}
+		/* Didn't lock. Increase VCO current */
+		rc = r82xx_write_reg_mask(priv, 0x12, 0x60, 0xe0);
+		if (rc < 0)
+			return rc;
 	}
 
 	if (!(data[2] & 0x40)) {
 		fprintf(stderr, "[R82XX] PLL not locked!\n");
-		priv->has_lock = 0;
-		return 0;
+		return -1;
 	}
-
-	priv->has_lock = 1;
 
 	/* set pll autotune = 8kHz */
 	rc = r82xx_write_reg_mask(priv, 0x1a, 0x08, 0x08);
@@ -1074,7 +1071,7 @@ int r82xx_set_freq(struct r82xx_priv *priv, uint32_t freq)
 		goto err;
 
 	rc = r82xx_set_pll(priv, lo_freq);
-	if (rc < 0 || !priv->has_lock)
+	if (rc < 0)
 		goto err;
 
 	/* switch between 'Cable1' and 'Air-In' inputs on sticks with

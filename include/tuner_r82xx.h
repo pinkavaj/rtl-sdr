@@ -83,7 +83,6 @@ struct r82xx_priv {
 	uint32_t			int_freq;
 	uint8_t				fil_cal_code;
 	uint8_t				input;
-	int				has_lock;
 	int				init_done;
 	int				disable_dither;
 	int				reg_cache;
