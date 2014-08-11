@@ -780,8 +780,8 @@ void software_agc(struct demod_state *d)
 			agc->gain_num -= agc->attack_step;
 		}
 
-		if (agc->gain_num < 1) {
-			agc->gain_num = 1;}
+		if (agc->gain_num < agc->gain_den) {
+			agc->gain_num = agc->gain_den;}
 		if (agc->gain_num > agc->gain_max) {
 			agc->gain_num = agc->gain_max;}
 
@@ -1119,7 +1119,7 @@ int agc_init(struct demod_state *s)
 
 	agc->gain_den = 1<<13;
 	agc->gain_num = agc->gain_den;
-	agc->gain_int = (int)(agc->gain_den / agc->gain_num);
+	agc->gain_int = (int)(agc->gain_num / agc->gain_den);
 	agc->peak_target = 1<<13;
 	agc->gain_max = 1<<10 * agc->gain_num;
 	agc->attack_step = 2;
