@@ -72,7 +72,7 @@
 #define AUTO_GAIN			-100
 #define BUFFER_DUMP			(1<<12)
 
-#define MAXIMUM_RATE			2800000
+#define MAXIMUM_RATE			2400000
 #define MINIMUM_RATE			1000000
 
 static volatile int do_exit = 0;
@@ -107,12 +107,20 @@ struct tuning_state
 	//pthread_mutex_t buf_mutex;
 };
 
+struct channel_solve
+/* details required to find optimal tuning */
+{
+	int upper, lower, bin_spec;
+	int bw_wanted, bw_needed;
+	int bin_e, downsample, downsample_passes;
+	double crop, crop_tmp;
+};
+
 /* 3000 is enough for 3GHz b/w worst case */
-#define MAX_TUNES	3000
+#define MAX_TUNES	4000
 struct tuning_state tunes[MAX_TUNES];
 int tune_count = 0;
 
-int boxcar = 1;
 int comp_fir_size = 0;
 int peak_hold = 0;
 
@@ -122,10 +130,9 @@ void usage(void)
 		"rtl_power, a simple FFT logger for RTL2832 based DVB-T receivers\n\n"
 		"Use:\trtl_power -f freq_range [-options] [filename]\n"
 		"\t-f lower:upper:bin_size [Hz]\n"
-		"\t (bin size is a maximum, smaller more convenient bins\n"
-		"\t  will be used.  valid range 1Hz - 2.8MHz)\n"
+		"\t  valid range for bin_size is 1Hz - 2.8MHz\n"
 		"\t[-i integration_interval (default: 10 seconds)]\n"
-		"\t (buggy if a full sweep takes longer than the interval)\n"
+		"\t buggy if a full sweep takes longer than the interval\n"
 		"\t[-1 enables single-shot mode (default: off)]\n"
 		"\t[-e exit_timer (default: off/0)]\n"
 		//"\t[-s avg/iir smoothing (default: avg)]\n"
@@ -134,19 +141,20 @@ void usage(void)
 		"\t[-g tuner_gain (default: automatic)]\n"
 		"\t[-p ppm_error (default: 0)]\n"
 		"\tfilename (a '-' dumps samples to stdout)\n"
-		"\t (omitting the filename also uses stdout)\n"
+		"\t omitting the filename also uses stdout\n"
 		"\n"
 		"Experimental options:\n"
 		"\t[-w window (default: rectangle)]\n"
-		"\t (hamming, blackman, blackman-harris, hann-poisson, bartlett, youssef)\n"
+		"\t hamming, blackman, blackman-harris, hann-poisson, bartlett, youssef\n"
 		// kaiser
-		"\t[-c crop_percent (default: 0%%, recommended: 20%%-50%%)]\n"
-		"\t (discards data at the edges, 100%% discards everything)\n"
-		"\t (has no effect for bins larger than 1MHz)\n"
+		"\t[-c crop_percent (default: 0%% suggested: 20%%)]\n"
+		"\t discards data at the edges, 100%% discards everything\n"
+		"\t has no effect for bins larger than 1MHz\n"
+		"\t this value is a minimum crop size, more may be discarded\n"
 		"\t[-F fir_size (default: disabled)]\n"
-		"\t (enables low-leakage downsample filter,\n"
-		"\t  fir_size can be 0 or 9.  0 has bad roll off,\n"
-		"\t  try with '-c 50%%')\n"
+		"\t enables low-leakage downsample filter,\n"
+		"\t fir_size can be 0 or 9.  0 has bad roll off,\n"
+		"\t try with '-c 50%%'\n"
 		"\t[-P enables peak hold (default: off)]\n"
 		"\t[-D direct_sampling_mode, 0 (default/off), 1 (I), 2 (Q), 3 (no-mod)]\n"
 		"\t[-O enable offset tuning (default: off)]\n"
@@ -155,16 +163,17 @@ void usage(void)
 		"\tdate, time, Hz low, Hz high, Hz step, samples, dbm, dbm, ...\n\n"
 		"Examples:\n"
 		"\trtl_power -f 88M:108M:125k fm_stations.csv\n"
-		"\t (creates 160 bins across the FM band,\n"
-		"\t  individual stations should be visible)\n"
+		"\t creates 160 bins across the FM band,\n"
+		"\t individual stations should be visible\n"
 		"\trtl_power -f 100M:1G:1M -i 5m -1 survey.csv\n"
-		"\t (a five minute low res scan of nearly everything)\n"
+		"\t a five minute low res scan of nearly everything\n"
 		"\trtl_power -f ... -i 15m -1 log.csv\n"
-		"\t (integrate for 15 minutes and exit afterwards)\n"
+		"\t integrate for 15 minutes and exit afterwards\n"
 		"\trtl_power -f ... -e 1h | gzip > log.csv.gz\n"
-		"\t (collect data for one hour and compress it on the fly)\n\n"
+		"\t collect data for one hour and compress it on the fly\n\n"
 		"Convert CSV to a waterfall graphic with:\n"
-		"\t http://kmkeen.com/tmp/heatmap.py.txt \n");
+		"  https://github.com/keenerd/rtl-sdr-misc/blob/master/heatmap/heatmap.py \n"
+		"More examples at http://kmkeen.com/rtl-power/\n");
 	exit(1);
 }
 
@@ -424,89 +433,145 @@ void rms_power(struct tuning_state *ts)
 	ts->samples += 1;
 }
 
-void frequency_range(char *arg, double crop)
-/* flesh out the tunes[] for scanning */
-// do we want the fewest ranges (easy) or the fewest bins (harder)?
+/* todo, add errors to parse_freq, solve_foo */
+
+int parse_frequency(char *arg, struct channel_solve *c)
 {
 	char *start, *stop, *step;
-	int i, j, upper, lower, max_size, bw_seen, bw_used, bin_e, buf_len;
-	int downsample, downsample_passes;
-	double bin_size;
-	struct tuning_state *ts;
 	/* hacky string parsing */
 	start = arg;
 	stop = strchr(start, ':') + 1;
 	stop[-1] = '\0';
 	step = strchr(stop, ':') + 1;
 	step[-1] = '\0';
-	lower = (int)atofs(start);
-	upper = (int)atofs(stop);
-	max_size = (int)atofs(step);
+	c->lower = (int)atofs(start);
+	c->upper = (int)atofs(stop);
+	c->bin_spec = (int)atofs(step);
 	stop[-1] = ':';
 	step[-1] = ':';
-	downsample = 1;
-	downsample_passes = 0;
+	return 0;
+}
+
+int solve_giant_bins(struct channel_solve *c)
+{
+	c->bw_wanted = c->bin_spec;
+	c->bw_needed = c->bin_spec;
+	tune_count = (c->upper - c->lower) / c->bin_spec;
+	c->bin_e = 0;
+	c->crop_tmp = 0;
+	return 0;
+}
+
+int solve_downsample(struct channel_solve *c, int boxcar)
+{
+	int scan_size, bins_wanted, bins_needed, ds_next;
+	double bw;
+
+	scan_size = c->upper - c->lower;
+	tune_count = 1;
+	c->bw_wanted = scan_size;
+
+	bins_wanted = (int)ceil((double)scan_size / (double)c->bin_spec);
+	c->bin_e = (int)ceil(log2(bins_wanted));
+	while (1) {
+		bins_needed = 1 << c->bin_e;
+		c->crop_tmp = (double)(bins_needed - bins_wanted) / (double)bins_needed;
+		if (c->crop_tmp >= c->crop) {
+			break;}
+		c->bin_e++;
+	}
+
+	while (1) {
+		bw = (double)scan_size / (1.0 - c->crop_tmp);
+		c->bw_needed = (int)bw * c->downsample;
+
+		if (boxcar) {
+			ds_next = c->downsample + 1;
+		} else {
+			ds_next = c->downsample * 2;
+		}
+		if (((int)bw * ds_next) > MAXIMUM_RATE) {
+			break;}
+
+		c->downsample = ds_next;
+		if (!boxcar) {
+			c->downsample_passes++;}
+	}
+
+	return 0;
+}
+
+int solve_hopping(struct channel_solve *c)
+{
+	int i, scan_size, bins_all, bins_crop, bins_2;
+	scan_size = c->upper - c->lower;
 	/* evenly sized ranges, as close to MAXIMUM_RATE as possible */
-	// todo, replace loop with algebra
-	for (i=1; i<1500; i++) {
-		bw_seen = (upper - lower) / i;
-		bw_used = (int)((double)(bw_seen) / (1.0 - crop));
-		if (bw_used > MAXIMUM_RATE) {
+	for (i=1; i<MAX_TUNES; i++) {
+		c->bw_wanted = scan_size / i;
+		bins_all = scan_size / c->bin_spec;
+		bins_crop = (int)ceil((double)bins_all / (double)i);
+		c->bin_e = (int)ceil(log2(bins_crop));
+		bins_2 = 1 << c->bin_e;
+		c->bw_needed = bins_2 * c->bin_spec;
+		c->crop_tmp = (double)(bins_2 - bins_crop) / (double)bins_2;
+		if (c->bw_needed > MAXIMUM_RATE) {
+			continue;}
+		if (c->crop_tmp < c->crop) {
 			continue;}
 		tune_count = i;
 		break;
 	}
-	/* unless small bandwidth */
-	if (bw_used < MINIMUM_RATE) {
-		tune_count = 1;
-		downsample = MAXIMUM_RATE / bw_used;
-		bw_used = bw_used * downsample;
+	return 0;
+}
+
+void frequency_range(char *arg, double crop, int boxcar)
+/* flesh out the tunes[] for scanning */
+{
+	struct channel_solve c;
+	struct tuning_state *ts;
+	int i, j, buf_len;
+
+	parse_frequency(arg, &c);
+	c.downsample = 1;
+	c.downsample_passes = 0;
+	c.crop = crop;
+
+	if (c.bin_spec >= MINIMUM_RATE) {
+		fprintf(stderr, "Mode: rms power\n");
+		solve_giant_bins(&c);
+	} else if ((c.upper - c.lower) < MINIMUM_RATE) {
+		fprintf(stderr, "Mode: downsampling\n");
+		solve_downsample(&c, boxcar);
+	} else {
+		fprintf(stderr, "Mode: normal\n");
+		solve_hopping(&c);
 	}
-	if (!boxcar && downsample > 1) {
-		downsample_passes = (int)log2(downsample);
-		downsample = 1 << downsample_passes;
-		bw_used = (int)((double)(bw_seen * downsample) / (1.0 - crop));
-	}
-	/* number of bins is power-of-two, bin size is under limit */
-	// todo, replace loop with log2
-	for (i=1; i<=21; i++) {
-		bin_e = i;
-		bin_size = (double)bw_used / (double)((1<<i) * downsample);
-		if (bin_size <= (double)max_size) {
-			break;}
-	}
-	/* unless giant bins */
-	if (max_size >= MINIMUM_RATE) {
-		bw_seen = max_size;
-		bw_used = max_size;
-		tune_count = (upper - lower) / bw_seen;
-		bin_e = 0;
-		crop = 0;
-	}
+	c.crop = c.crop_tmp;
+
 	if (tune_count > MAX_TUNES) {
 		fprintf(stderr, "Error: bandwidth too wide.\n");
 		exit(1);
 	}
-	buf_len = 2 * (1<<bin_e) * downsample;
+	buf_len = 2 * (1<<c.bin_e) * c.downsample;
 	if (buf_len < DEFAULT_BUF_LENGTH) {
 		buf_len = DEFAULT_BUF_LENGTH;
 	}
 	/* build the array */
 	for (i=0; i<tune_count; i++) {
 		ts = &tunes[i];
-		ts->freq = lower + i*bw_seen + bw_seen/2;
-		ts->rate = bw_used;
-		ts->bin_e = bin_e;
+		ts->freq = c.lower + i*c.bw_wanted + c.bw_wanted/2;
+		ts->rate = c.bw_needed;
+		ts->bin_e = c.bin_e;
 		ts->samples = 0;
-		ts->crop = crop;
-		ts->downsample = downsample;
-		ts->downsample_passes = downsample_passes;
-		ts->avg = (long*)malloc((1<<bin_e) * sizeof(long));
+		ts->crop = c.crop;
+		ts->downsample = c.downsample;
+		ts->downsample_passes = c.downsample_passes;
+		ts->avg = (long*)malloc((1<<c.bin_e) * sizeof(long));
 		if (!ts->avg) {
 			fprintf(stderr, "Error: malloc.\n");
 			exit(1);
 		}
-		for (j=0; j<(1<<bin_e); j++) {
+		for (j=0; j<(1<<c.bin_e); j++) {
 			ts->avg[j] = 0L;
 		}
 		ts->buf8 = (uint8_t*)malloc(buf_len * sizeof(uint8_t));
@@ -518,14 +583,14 @@ void frequency_range(char *arg, double crop)
 	}
 	/* report */
 	fprintf(stderr, "Number of frequency hops: %i\n", tune_count);
-	fprintf(stderr, "Dongle bandwidth: %iHz\n", bw_used);
-	fprintf(stderr, "Downsampling by: %ix\n", downsample);
-	fprintf(stderr, "Cropping by: %0.2f%%\n", crop*100);
-	fprintf(stderr, "Total FFT bins: %i\n", tune_count * (1<<bin_e));
+	fprintf(stderr, "Dongle bandwidth: %iHz\n", c.bw_needed);
+	fprintf(stderr, "Downsampling by: %ix\n", c.downsample);
+	fprintf(stderr, "Cropping by: %0.2f%%\n", c.crop*100);
+	fprintf(stderr, "Total FFT bins: %i\n", tune_count * (1<<c.bin_e));
 	fprintf(stderr, "Logged FFT bins: %i\n", \
-	  (int)((double)(tune_count * (1<<bin_e)) * (1.0-crop)));
-	fprintf(stderr, "FFT bin size: %0.2fHz\n", bin_size);
-	fprintf(stderr, "Buffer size: %i bytes (%0.2fms)\n", buf_len, 1000 * 0.5 * (float)buf_len / (float)bw_used);
+	  (int)((double)(tune_count * (1<<c.bin_e)) * (1.0-c.crop)));
+	fprintf(stderr, "FFT bin size: %iHz\n", c.bin_spec);
+	fprintf(stderr, "Buffer size: %i bytes (%0.2fms)\n", buf_len, 1000 * 0.5 * (float)buf_len / (float)c.bw_needed);
 }
 
 void retune(rtlsdr_dev_t *d, int freq)
@@ -657,7 +722,16 @@ void scanner(void)
 		}
 		ds = ts->downsample;
 		ds_p = ts->downsample_passes;
-		if (boxcar && ds > 1) {
+		if (ds_p) {  /* recursive */
+			for (j=0; j < ds_p; j++) {
+				downsample_iq(fft_buf, buf_len >> j);
+			}
+			/* droop compensation */
+			if (comp_fir_size == 9 && ds_p <= CIC_TABLE_MAX) {
+				generic_fir(fft_buf, buf_len >> j, cic_9_tables[ds_p]);
+				generic_fir(fft_buf+1, (buf_len >> j)-1, cic_9_tables[ds_p]);
+			}
+		} else if (ds > 1) {  /* boxcar */
 			j=2, j2=0;
 			while (j < buf_len) {
 				fft_buf[j2]   += fft_buf[j];
@@ -667,15 +741,6 @@ void scanner(void)
 				j += 2;
 				if (j % (ds*2) == 0) {
 					j2 += 2;}
-			}
-		} else if (ds_p) {  /* recursive */
-			for (j=0; j < ds_p; j++) {
-				downsample_iq(fft_buf, buf_len >> j);
-			}
-			/* droop compensation */
-			if (comp_fir_size == 9 && ds_p <= CIC_TABLE_MAX) {
-				generic_fir(fft_buf, buf_len >> j, cic_9_tables[ds_p]);
-				generic_fir(fft_buf+1, (buf_len >> j)-1, cic_9_tables[ds_p]);
 			}
 		}
 		remove_dc(fft_buf, buf_len / ds);
@@ -769,6 +834,7 @@ int main(int argc, char **argv)
 	int interval = 10;
 	int fft_threads = 1;
 	int smoothing = 0;
+	int boxcar = 1;
 	int single = 0;
 	int direct_sampling = 0;
 	int offset_tuning = 0;
@@ -868,7 +934,7 @@ int main(int argc, char **argv)
 		exit(1);
 	}
 
-	frequency_range(freq_optarg, crop);
+	frequency_range(freq_optarg, crop, boxcar);
 
 	if (tune_count == 0) {
 		usage();}
