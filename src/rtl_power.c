@@ -105,6 +105,7 @@ struct tuning_state
 	int downsample_passes;  /* for the recursive filter */
 	int comp_fir_size;
 	int peak_hold;
+	int linear;
 	double crop;
 	//pthread_rwlock_t avg_lock;
 	//pthread_mutex_t avg_mutex;
@@ -132,6 +133,7 @@ struct misc_settings
 	int boxcar;
 	int comp_fir_size;
 	int peak_hold;
+	int linear;
 	int target_rate;
 	double crop;
 	int gain;
@@ -176,7 +178,8 @@ void usage(void)
 		"\t fir_size can be 0 or 9.  0 has bad roll off,\n"
 		"\t try with '-c 50%%'\n"
 		"\t[-r max_sample_rate (default: 2.4M)]\n"
-		"\t[-P enables peak hold (default: off)]\n"
+		"\t[-P enables peak hold (default: off/averaging)]\n"
+		"\t[-L enable linear output (default: off/dB)]\n"
 		"\t[-D direct_sampling_mode, 0 (default/off), 1 (I), 2 (Q), 3 (no-mod)]\n"
 		"\t[-O enable offset tuning (default: off)]\n"
 		"\n"
@@ -622,6 +625,7 @@ void frequency_range(char *arg, struct misc_settings *ms)
 		ts->downsample_passes = c.downsample_passes;
 		ts->comp_fir_size = ms->comp_fir_size;
 		ts->peak_hold = ms->peak_hold;
+		ts->linear = ms->linear;
 		ts->avg = (long*)malloc((1<<c.bin_e) * sizeof(long));
 		if (!ts->avg) {
 			fprintf(stderr, "Error: malloc.\n");
@@ -873,6 +877,7 @@ void csv_dbm(struct tuning_state *ts)
 	int i, len, ds, i1, i2, bw2, bin_count;
 	long tmp;
 	double dbm;
+	char *sep = ", ";
 	len = 1 << ts->bin_e;
 	ds = ts->downsample;
 	/* fix FFT stuff quirks */
@@ -895,18 +900,19 @@ void csv_dbm(struct tuning_state *ts)
 	i1 = 0 + (int)((double)len * ts->crop * 0.5);
 	i2 = (len-1) - (int)((double)len * ts->crop * 0.5);
 	for (i=i1; i<=i2; i++) {
+		if (i == i2) {
+			sep = "\n";
+		}
 		dbm  = (double)ts->avg[i];
 		dbm /= (double)ts->rate;
 		dbm /= (double)ts->samples;
-		dbm  = 10 * log10(dbm);
-		fprintf(file, "%.2f, ", dbm);
+		if (ts->linear) {
+			fprintf(file, "%.5g%s", dbm, sep);
+		} else {
+			dbm = 10 * log10(dbm);
+			fprintf(file, "%.2f%s", dbm, sep);
+		}
 	}
-	dbm = (double)ts->avg[i2] / ((double)ts->rate * (double)ts->samples);
-	if (ts->bin_e == 0) {
-		dbm = ((double)ts->avg[0] / \
-		((double)ts->rate * (double)ts->samples));}
-	dbm  = 10 * log10(dbm);
-	fprintf(file, "%.2f\n", dbm);
 	for (i=0; i<len; i++) {
 		ts->avg[i] = 0L;
 	}
@@ -922,6 +928,8 @@ void init_misc(struct misc_settings *ms)
 	ms->gain = AUTO_GAIN;
 	ms->window_fn = rectangle;
 	ms->smoothing = 0;
+	ms->peak_hold = 0;
+	ms->linear = 0;
 }
 
 int main(int argc, char **argv)
@@ -951,7 +959,7 @@ int main(int argc, char **argv)
 	freq_optarg = "";
 	init_misc(&ms);
 
-	while ((opt = getopt(argc, argv, "f:i:s:r:t:d:g:p:e:w:c:F:1PD:Oh")) != -1) {
+	while ((opt = getopt(argc, argv, "f:i:s:r:t:d:g:p:e:w:c:F:1PLD:Oh")) != -1) {
 		switch (opt) {
 		case 'f': // lower:upper:bin_size
 			if (f_set) {
@@ -1014,6 +1022,9 @@ int main(int argc, char **argv)
 			break;
 		case 'P':
 			ms.peak_hold = 1;
+			break;
+		case 'L':
+			ms.linear = 1;
 			break;
 		case 'D':
 			direct_sampling = atoi(optarg);
