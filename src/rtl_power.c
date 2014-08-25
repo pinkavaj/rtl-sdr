@@ -107,6 +107,7 @@ struct tuning_state
 	int peak_hold;
 	int linear;
 	double crop;
+	int crop_i1, crop_i2;
 	//pthread_rwlock_t avg_lock;
 	//pthread_mutex_t avg_mutex;
 	/* having the iq buffer here is wasteful, but will avoid contention */
@@ -572,7 +573,7 @@ void frequency_range(char *arg, struct misc_settings *ms)
 {
 	struct channel_solve c;
 	struct tuning_state *ts;
-	int i, j, buf_len, length;
+	int i, j, buf_len, length, final_bins;
 
 	fprintf(stderr, "Range: %s\n", arg);
 	parse_frequency(arg, &c);
@@ -645,6 +646,9 @@ void frequency_range(char *arg, struct misc_settings *ms)
 		for (j=0; j<length; j++) {
 			ts->window_coefs[j] = (int)(256*ms->window_fn(j, length));
 		}
+		final_bins = c.bw_wanted / c.bin_spec;
+		ts->crop_i1 = length/2 - final_bins/2;
+		ts->crop_i2 = ts->crop_i1 + final_bins - 1;
 	}
 	tune_count += c.hops;
 	/* report */
@@ -874,7 +878,7 @@ void scanner(void)
 
 void csv_dbm(struct tuning_state *ts)
 {
-	int i, len, ds, i1, i2, bw2, bin_count;
+	int i, len, ds, bw2, bin_count;
 	long tmp;
 	double dbm;
 	char *sep = ", ";
@@ -897,10 +901,8 @@ void csv_dbm(struct tuning_state *ts)
 	fprintf(file, "%i, %i, %.2f, %i, ", ts->freq - bw2, ts->freq + bw2,
 		(double)ts->rate / (double)(len*ds), ts->samples);
 	// something seems off with the dbm math
-	i1 = 0 + (int)((double)len * ts->crop * 0.5);
-	i2 = (len-1) - (int)((double)len * ts->crop * 0.5);
-	for (i=i1; i<=i2; i++) {
-		if (i == i2) {
+	for (i=ts->crop_i1; i<=ts->crop_i2; i++) {
+		if (i == ts->crop_i2) {
 			sep = "\n";
 		}
 		dbm  = (double)ts->avg[i];
