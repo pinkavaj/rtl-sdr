@@ -1127,7 +1127,7 @@ int r82xx_set_nomod(struct r82xx_priv *priv)
 	rc = r82xx_write_reg_mask(priv, 0x10, 0xd0, 0xe0);
 	if (rc < 0) goto err;
 
-	/* VCO power off? */
+	/* VCO power off */
 	rc = r82xx_write_reg_mask(priv, 0x12, 0xe0, 0xe0);
 
 err:

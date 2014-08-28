@@ -201,7 +201,7 @@ void usage(void)
 		"\trtl_power -f ... -e 1h | gzip > log.csv.gz\n"
 		"\t  collect data for one hour and compress it on the fly\n\n"
 		"\tIf you have issues writing +2GB logs on a 32bit platform\n"
-		"\tuse redirection (rtl_power ... > filename.csv) instead\n\n "
+		"\tuse redirection (rtl_power ... > filename.csv) instead\n\n"
 		"Convert CSV to a waterfall graphic with:\n"
 		"  https://github.com/keenerd/rtl-sdr-misc/blob/master/heatmap/heatmap.py \n"
 		"More examples at http://kmkeen.com/rtl-power/\n");
@@ -514,8 +514,7 @@ int solve_giant_bins(struct channel_solve *c)
 
 int solve_downsample(struct channel_solve *c, int target_rate, int boxcar)
 {
-	int scan_size, bins_wanted, bins_needed, ds_next;
-	double bw;
+	int scan_size, bins_wanted, bins_needed, ds_next, bw;
 
 	scan_size = c->upper - c->lower;
 	c->hops = 1;
@@ -531,16 +530,18 @@ int solve_downsample(struct channel_solve *c, int target_rate, int boxcar)
 		c->bin_e++;
 	}
 
+	c->downsample = 1;
+	c->downsample_passes = 0;
 	while (1) {
-		bw = (double)scan_size / (1.0 - c->crop_tmp);
-		c->bw_needed = (int)bw * c->downsample;
+		bw = (int)((double)scan_size / (1.0 - c->crop_tmp));
+		c->bw_needed = bw * c->downsample;
 
 		if (boxcar) {
 			ds_next = c->downsample + 1;
 		} else {
 			ds_next = c->downsample * 2;
 		}
-		if (((int)bw * ds_next) > target_rate) {
+		if ((bw * ds_next) > target_rate) {
 			break;}
 
 		c->downsample = ds_next;
@@ -553,10 +554,13 @@ int solve_downsample(struct channel_solve *c, int target_rate, int boxcar)
 
 int solve_hopping(struct channel_solve *c, int target_rate)
 {
-	int i, scan_size, bins_all, bins_crop, bins_2;
+	int i, scan_size, bins_all, bins_crop, bins_2, min_hops;
 	scan_size = c->upper - c->lower;
+	min_hops = scan_size / MAXIMUM_RATE - 1;
+	if (min_hops < 1) {
+		min_hops = 1;}
 	/* evenly sized ranges, as close to target_rate as possible */
-	for (i=1; i<MAX_TUNES; i++) {
+	for (i=min_hops; i<MAX_TUNES; i++) {
 		c->bw_wanted = scan_size / i;
 		bins_all = scan_size / c->bin_spec;
 		bins_crop = (int)ceil((double)bins_all / (double)i);
@@ -677,7 +681,7 @@ void frequency_range(char *arg, struct misc_settings *ms)
 		logged_bins += hop_bins;
 		ts->crop_i1 = (length - hop_bins) / 2;
 		ts->crop_i2 = ts->crop_i1 + hop_bins - 1;
-		ts->freq = (lower_edge - ts->crop_i1 * c.bin_spec) + c.bw_needed/2;
+		ts->freq = (lower_edge - ts->crop_i1 * c.bin_spec) + c.bw_needed/(2*c.downsample);
 		/* prep for next hop */
 		lower_edge = ts->freq_high;
 	}
