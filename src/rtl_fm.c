@@ -878,14 +878,15 @@ void full_demod(struct demod_state *d)
 int16_t* mark_shared_buffer(void)
 {
 	int i = 0;
-	while (1) {
-		i = (i+1) % SHARED_SIZE;
+	for (i=0; i<SHARED_SIZE; i++) {
 		if (ss_busy[i] == 0) {
 			ss_busy[i] = 1;
 			return shared_samples[i];
 		}
 	}
-	return NULL;
+	/* worst case, nuke a buffer */
+	ss_busy[0];
+	return shared_samples[0];
 }
 
 int unmark_shared_buffer(int16_t *buf)
