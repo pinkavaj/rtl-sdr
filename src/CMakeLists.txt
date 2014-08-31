@@ -112,13 +112,14 @@ target_link_libraries(rtl_power rtlsdr_shared convenience_static
     ${CMAKE_THREAD_LIBS_INIT}
 )
 if(UNIX)
-target_link_libraries(rtl_fm m)
 target_link_libraries(rtl_adsb m)
 target_link_libraries(rtl_power m)
 if(APPLE)
     target_link_libraries(rtl_test m)
+    target_link_libraries(rtl_fm m)
 else()
     target_link_libraries(rtl_test m rt)
+    target_link_libraries(rtl_fm m rt)
 endif()
 endif()
 

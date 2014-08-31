@@ -46,7 +46,7 @@ AC_CHECK_LIB(m, sqrt, [LIBS="$LIBS -lm"])
 dnl libmath (for rtl_power)
 AC_CHECK_LIB(m, atan2, [LIBS="$LIBS -lm"])
 
-dnl librealtime (for rtl_test)
+dnl librealtime (for rtl_test, rtl_fm)
 AC_CHECK_LIB(rt, clock_gettime, [LIBS="$LIBS -lrt"])
 
 # The following test is taken from WebKit's webkit.m4
