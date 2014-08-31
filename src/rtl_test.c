@@ -53,6 +53,8 @@
 #define PPM_DURATION			10
 #define PPM_DUMP_TIME			5
 
+#define SCAN_LIMIT			2500000000
+
 static enum {
 	NO_BENCHMARK,
 	TUNER_BENCHMARK,
@@ -235,145 +237,78 @@ static uint32_t min_step(uint32_t freq) {
 	return 100;
 }
 
-static void report_band_start(uint32_t start) {
-	fprintf(stderr, "Found a new band starting at %u Hz\n", start);
+int confirm_pll_lock(uint32_t f)
+{
+	int i;
+	for (i=0; i<20; i++) {
+		if (rtlsdr_set_center_freq(dev, f) >= 0)
+			return 1;
+	}
+	return 0;
 }
 
-static void report_band(uint32_t low, uint32_t high) {
-	fprintf(stderr, "Tuning band: %u - %u Hz\n", low, high);
+/* returns last frequency before achieving status of 'lock' */
+uint32_t coarse_search(uint32_t start, int lock)
+{
+	uint32_t f = start, f2;
+	int status;
+	while (f < SCAN_LIMIT) {
+		if (do_exit)
+			break;
+		f2 = f + max_step(f);
+		status = rtlsdr_set_center_freq(dev, f2) >= 0;
+		if (!lock && !status)
+			status = confirm_pll_lock(f2);
+		if (status == lock)
+			return f;
+		f = f2;
+	}
+	return SCAN_LIMIT + 1;
+}
+
+/* returns frequency of a transition
+ * must have one transition between start and start+step */
+uint32_t fine_search(uint32_t start, uint32_t step)
+{
+	int low_status, mid_status, high_status;
+	uint32_t f, stop;
+	stop = start + step;
+	f = start + step / 2;
+	low_status = rtlsdr_set_center_freq(dev, start) >= 0;
+	high_status = rtlsdr_set_center_freq(dev, stop) >= 0;
+	if (low_status == high_status)
+		return start;
+	while (step > min_step(start)) {
+		if (do_exit)
+			break;
+		mid_status = rtlsdr_set_center_freq(dev, f) >= 0;
+		if (low_status == mid_status)
+			start = f;
+		else
+			stop = f;
+		step = stop - start;
+		f = start + step / 2;
+	}
+	return f;
 }
 
 void tuner_benchmark(void)
 {
-	uint32_t current = max_step(0);
-	uint32_t band_start = 0;
-	uint32_t low_bound = 0, high_bound = 0;
-	char buf[20];
-	enum { FIND_START, REFINE_START, FIND_END, REFINE_END } state;
-
-	fprintf(stderr, "Testing tuner range. This may take a couple of minutes..\n");
-
-	/* Scan for tuneable frequencies coarsely. When we find something,
-	 * do a binary search to narrow down the exact edge of the band.
-	 *
-	 * This can potentially miss bands/gaps smaller than max_step(freq)
-	 * but it is a lot faster than exhaustively scanning everything.
-	 */
-
-	/* handle bands starting at 0Hz */
-	if (rtlsdr_set_center_freq(dev, 0) < 0)
-		state = FIND_START;
-	else {
-		band_start = 0;
-		report_band_start(band_start);
-		state = FIND_END;
+	uint32_t f = 0, low_bound, high_bound;
+	fprintf(stderr, "Testing tuner range. This may take a couple of minutes...\n");
+	while (!do_exit) {
+		/* find start of a band */
+		f = coarse_search(f, 1);
+		low_bound = fine_search(f, max_step(f));
+		f += max_step(f);
+		/* find stop of a band */
+		f = coarse_search(f, 0);
+		high_bound = fine_search(f, max_step(f));
+		f += max_step(f);
+		if (f > SCAN_LIMIT)
+			break;
+		fprintf(stderr, "Band: %u - %u Hz\n", low_bound, high_bound);
 	}
-
-	while (current < 3e9 && !do_exit) {
-		switch (state) {
-		case FIND_START:
-			/* scanning for the start of a new band */
-			if (rtlsdr_set_center_freq(dev, current) < 0) {
-				/* still looking for a band */
-				low_bound = current;
-				current += max_step(current);
-			} else {
-				/* new band, starting somewhere at or before current */
-				/* low_bound < start <= current */
-				high_bound = current;
-				state = REFINE_START;
-			}
-			break;
-
-		case REFINE_START:
-			/* refining the start of a band */
-			/* low_bound < bandstart <= high_bound */
-			if (rtlsdr_set_center_freq(dev, current) == 0) {
-				/* current is inside the band */
-				/* low_bound < bandstart <= current */
-				if (current - low_bound <= min_step(current)) {
-					/* start found at low_bound */
-					band_start = current;
-					report_band_start(band_start);
-					low_bound = current;
-					current = band_start + max_step(band_start);
-					state = FIND_END;
-				} else {
-					/* binary search */
-					high_bound = current;
-					current = (current + low_bound) / 2;
-				}
-			} else {
-				/* current is outside the band */
-				/* current < bandstart <= high_bound */
-				if (high_bound - current <= min_step(current)) {
-					/* start found at high_bound */
-					low_bound = band_start = high_bound;
-					report_band_start(band_start);
-					current = band_start + max_step(band_start);
-					state = FIND_END;
-				} else {
-					/* binary search */
-					low_bound = current;
-					current = (current + high_bound) / 2;
-				}
-			}
-			break;
-
-		case FIND_END:
-			/* scanning for the end of the current band */
-			if (rtlsdr_set_center_freq(dev, current) == 0) {
-				/* still looking for the end of the band */
-				low_bound = current;
-				current += max_step(current);
-			} else {
-				/* end found, coarsely */
-				/* low_bound <= bandend < current, refine it */
-				high_bound = current;
-				state = REFINE_END;
-			}
-			break;
-
-		case REFINE_END:
-			/* refining the end of a band */
-			/* low_bound <= bandend < high_bound */
-			if (rtlsdr_set_center_freq(dev, current) < 0) {
-				/* current is outside the band */
-				/* low_bound <= bandend < current */
-				if (current - low_bound <= min_step(current)) {
-					/* band ends at low_bound */
-					report_band(band_start, low_bound);
-					low_bound = current;
-					current = low_bound + max_step(low_bound);
-					state = FIND_START;
-				} else {
-					/* binary search */
-					high_bound = current;
-					current = (current + low_bound) / 2;
-				}
-			} else {
-				/* current is inside the band */
-				/* current <= bandend < high_bound */
-				if (high_bound - current <= min_step(current)) {
-					/* band ends at high_bound */
-					report_band(band_start, current);
-					low_bound = high_bound;
-					current = low_bound + max_step(low_bound);
-					state = FIND_START;
-				} else {
-					/* binary search */
-					low_bound = current;
-					current = (current + high_bound) / 2;
-				}
-			}
-			break;
-		}
-	}
-
-	if (state == FIND_END)
-		report_band(band_start, current);
-	else if (state == REFINE_END)
-		report_band(band_start, low_bound);
 }
 
 int main(int argc, char **argv)
