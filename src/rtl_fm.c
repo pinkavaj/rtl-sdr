@@ -87,6 +87,9 @@
 
 #define FREQUENCIES_LIMIT		1000
 
+#define PI_INT				(1<<14)
+#define ONE_INT				(1<<14)
+
 static volatile int do_exit = 0;
 static int lcm_post[17] = {1,1,1,3,1,5,3,7,1,9,5,11,3,13,7,15,1};
 static int ACTUAL_BUF_LENGTH;
@@ -115,6 +118,7 @@ struct dongle_state
 	int      offset_tuning;
 	int      direct_sampling;
 	int      mute;
+	int      pre_rotate;
 	struct demod_state *demod_target;
 };
 
@@ -156,6 +160,12 @@ struct demod_state
 	int      now_lpr;
 	int      prev_lpr_index;
 	int      dc_block, dc_avg;
+	int      rotate_enable;
+	double   rotate_angle;
+	int32_t  angle_a;  /* constant, cos(rotate_angle) * ONE_INT */
+	int32_t  angle_b;  /* constant, sin(rotate_angle) * ONE_INT */
+	int32_t  angle_sin;  /* iterative */
+	int32_t  angle_cos;
 	int      agc_enable;
 	struct   agc_state *agc;
 	void     (*mode_demod)(struct demod_state*);
@@ -323,6 +333,37 @@ void rotate_90(unsigned char *buf, uint32_t len)
 		buf[i+6] = buf[i+7];
 		buf[i+7] = tmp;
 	}
+}
+
+void translate_init(struct demod_state *d, double angle)
+/* angle in radians */
+{
+	d->angle_a = (int32_t)(cos(demod.rotate_angle) * ONE_INT);
+	d->angle_b = (int32_t)(sin(demod.rotate_angle) * ONE_INT);
+	d->angle_sin = 0;
+	d->angle_cos = ONE_INT;
+}
+
+void translate(struct demod_state *d)
+{
+	int i, len;
+	int32_t old_s, old_c, new_s, new_c, angle_a, angle_b;
+	int16_t *buf = d->lowpassed;
+	len = d->lp_len;
+	old_s = d->angle_sin;
+	old_c = d->angle_cos;
+	angle_a = d->angle_a;
+	angle_b = d->angle_b;
+	for (i=0; i<len; i+=2) {
+		buf[i]   = (int16_t)(((int32_t)buf[i] * old_c) >> 14);
+		buf[i+1] = (int16_t)(((int32_t)buf[i+1] * old_s) >> 14);
+		new_s = (angle_b * old_c + angle_a * old_s) >> 14;
+		new_c = (angle_a * old_c + angle_b * old_s) >> 14;
+		old_s = new_s;
+		old_c = new_c;
+	}
+	d->angle_sin = old_s;
+	d->angle_cos = old_c;
 }
 
 void low_pass(struct demod_state *d)
@@ -916,7 +957,7 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 			buf[i] = 127;}
 		s->mute = 0;
 	}
-	if (!s->offset_tuning) {
+	if (s->pre_rotate) {
 		rotate_90(buf, len);}
 	for (i=0; i<(int)len; i++) {
 		s->buf16[i] = (int16_t)buf[i] - 127;}
@@ -1051,7 +1092,7 @@ static void optimal_settings(int freq, int rate)
 	}
 	capture_freq = freq;
 	capture_rate = dm->downsample * dm->rate_in;
-	if (!d->offset_tuning) {
+	if (d->pre_rotate) {
 		capture_freq = freq + capture_rate/4;}
 	capture_freq += cs->edge * dm->rate_in / 2;
 	dm->output_scale = (1<<15) / (128 * dm->downsample);
@@ -1134,6 +1175,7 @@ void dongle_init(struct dongle_state *s)
 	s->mute = 0;
 	s->direct_sampling = 0;
 	s->offset_tuning = 0;
+	s->pre_rotate = 1;
 	s->demod_target = &demod;
 	s->buf16 = mark_shared_buffer();
 }
@@ -1354,7 +1396,8 @@ int main(int argc, char **argv)
 			if (strcmp("no-mod",  optarg) == 0) {
 				dongle.direct_sampling = 3;}
 			if (strcmp("offset",  optarg) == 0) {
-				dongle.offset_tuning = 1;}
+				dongle.offset_tuning = 1;
+				dongle.pre_rotate = 0;}
 			if (strcmp("wav",  optarg) == 0) {
 				output.wav_format = 1;}
 			if (strcmp("pad",  optarg) == 0) {
