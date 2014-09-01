@@ -30,7 +30,6 @@
  *
  * todo:
  *       sanity checks
- *       scale squelch to other input parameters
  *       pad output on hop
  *       frequency ranges could be stored better
  *       auto-hop after time limit
@@ -124,10 +123,9 @@ struct dongle_state
 
 struct agc_state
 {
-	int64_t gain_num;
-	int64_t gain_den;
-	int64_t gain_max;
-	int     gain_int;
+	int32_t gain_num;
+	int32_t gain_den;
+	int32_t gain_max;
 	int     peak_target;
 	int     attack_step;
 	int     decay_step;
@@ -232,9 +230,9 @@ void usage(void)
 		"\t[-E enable_option (default: none)]\n"
 		"\t    use multiple -E to enable multiple options\n"
 		"\t    edge:   enable lower edge tuning\n"
-		"\t    dc:     enable dc blocking filter\n"
+		"\t    no-dc:  disable dc blocking filter\n"
 		"\t    deemp:  enable de-emphasis filter\n"
-		"\t    swagc:  enable software agc (only for AM, broken)\n"
+		"\t    swagc:  enable software agc (only for AM modes)\n"
 		"\t    direct: enable direct sampling\n"
 		"\t    no-mod: enable no-mod direct sampling\n"
 		"\t    offset: enable offset tuning\n"
@@ -633,7 +631,7 @@ void fm_demod(struct demod_state *fm)
 void am_demod(struct demod_state *fm)
 // todo, fix this extreme laziness
 {
-	int i, pcm;
+	int32_t i, pcm;
 	int16_t *lp = fm->lowpassed;
 	for (i = 0; i < fm->lp_len; i += 2) {
 		// hypot uses floats but won't overflow
@@ -643,7 +641,7 @@ void am_demod(struct demod_state *fm)
 		lp[i/2] = (int16_t)sqrt(pcm) * fm->output_scale;
 	}
 	fm->lp_len = fm->lp_len / 2;
-	// lowpass? (3khz)  highpass?  (dc)
+	// lowpass? (3khz)
 }
 
 void usb_demod(struct demod_state *fm)
@@ -764,20 +762,22 @@ int squelch_to_rms(int db, struct dongle_state *dongle, struct demod_state *demo
 }
 
 void software_agc(struct demod_state *d)
-/* ignores complex pairs, indirectly calculates power squelching */
 {
 	int i = 0;
-	int output;
+	int peaked = 0;
+	int32_t output;
 	struct agc_state *agc = d->agc;
 	int16_t *lp = d->lowpassed;
 
 	for (i=0; i < d->lp_len; i++) {
-		output = (int)((int64_t)lp[i] * agc->gain_num / agc->gain_den);
+		output = ((int32_t)lp[i] * agc->gain_num / agc->gain_den);
 
-		if (abs(output) < agc->peak_target) {
-			agc->gain_num += agc->decay_step;
+		if (!peaked && abs(output) > agc->peak_target) {
+			peaked = 1;}
+		if (peaked) {
+			agc->gain_num += agc->attack_step;
 		} else {
-			agc->gain_num -= agc->attack_step;
+			agc->gain_num += agc->decay_step;
 		}
 
 		if (agc->gain_num < agc->gain_den) {
@@ -785,8 +785,12 @@ void software_agc(struct demod_state *d)
 		if (agc->gain_num > agc->gain_max) {
 			agc->gain_num = agc->gain_max;}
 
-		agc->gain_int = (int)(agc->gain_num / agc->gain_den);
-		lp[i] = output;
+		if (output >= (1<<15)) {
+			output = (1<<15) - 1;}
+		if (output < -(1<<15)) {
+			output = -(1<<15) + 1;}
+
+		lp[i] = (int16_t)output;
 	}
 }
 
@@ -812,12 +816,8 @@ void full_demod(struct demod_state *d)
 	} else {
 		low_pass(d);
 	}
-	if (d->agc_enable) {
-		software_agc(d);
-		if(d->squelch_level && d->agc->gain_int > d->squelch_level) {
-			do_squelch = 1;}
 	/* power squelch */
-	} else if (d->squelch_level) {
+	if (d->squelch_level) {
 		sr = rms(d->lowpassed, d->lp_len, 1);
 		if (sr < d->squelch_level) {
 			do_squelch = 1;}
@@ -835,16 +835,17 @@ void full_demod(struct demod_state *d)
 	}
 	d->mode_demod(d);  /* lowpassed -> lowpassed */
 	if (d->mode_demod == &raw_demod) {
-		return;
-	}
+		return;}
+	if (d->dc_block) {
+		dc_block_filter(d);}
+	if (d->agc_enable) {
+		software_agc(d);}
 	/* todo, fm noise squelch */
 	// use nicer filter here too?
 	if (d->post_downsample > 1) {
 		d->lp_len = low_pass_simple(d->lowpassed, d->lp_len, d->post_downsample);}
 	if (d->deemph) {
 		deemph_filter(d);}
-	if (d->dc_block) {
-		dc_block_filter(d);}
 	if (d->rate_out2 > 0) {
 		low_pass_real(d);
 		//arbitrary_resample(d->lowpassed, d->lowpassed, d->lp_len, d->lp_len * d->rate_out2 / d->rate_out);
@@ -1136,7 +1137,7 @@ void demod_init(struct demod_state *s)
 	s->prev_lpr_index = 0;
 	s->deemph_a = 0;
 	s->now_lpr = 0;
-	s->dc_block = 0;
+	s->dc_block = 1;
 	s->dc_avg = 0;
 	pthread_rwlock_init(&s->rw, NULL);
 	pthread_cond_init(&s->ready, NULL);
@@ -1211,13 +1212,12 @@ int agc_init(struct demod_state *s)
 	agc = malloc(sizeof(struct agc_state));
 	s->agc = agc;
 
-	agc->gain_den = 1<<13;
+	agc->gain_den = 1<<16;
 	agc->gain_num = agc->gain_den;
-	agc->gain_int = (int)(agc->gain_num / agc->gain_den);
-	agc->peak_target = 1<<13;
-	agc->gain_max = 1<<10 * agc->gain_num;
-	agc->attack_step = 2;
+	agc->peak_target = 1<<14;
+	agc->gain_max = 256 * agc->gain_den;
 	agc->decay_step = 1;
+	agc->attack_step = -2;
 	return 0;
 }
 
@@ -1320,8 +1320,8 @@ int main(int argc, char **argv)
 		case 'E':
 			if (strcmp("edge",  optarg) == 0) {
 				controller.edge = 1;}
-			if (strcmp("dc", optarg) == 0) {
-				demod.dc_block = 1;}
+			if (strcmp("no-dc", optarg) == 0) {
+				demod.dc_block = 0;}
 			if (strcmp("deemp",  optarg) == 0) {
 				demod.deemph = 1;}
 			if (strcmp("swagc",  optarg) == 0) {
