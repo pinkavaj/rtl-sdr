@@ -129,6 +129,7 @@ struct agc_state
 	int     peak_target;
 	int     attack_step;
 	int     decay_step;
+	int     error;
 };
 
 struct demod_state
@@ -770,7 +771,9 @@ void software_agc(struct demod_state *d)
 	int16_t *lp = d->lowpassed;
 
 	for (i=0; i < d->lp_len; i++) {
-		output = ((int32_t)lp[i] * agc->gain_num / agc->gain_den);
+		output = (int32_t)lp[i] * agc->gain_num + agc->error;
+		agc->error = output % agc->gain_den;
+		output /= agc->gain_den;
 
 		if (!peaked && abs(output) > agc->peak_target) {
 			peaked = 1;}
@@ -1212,7 +1215,7 @@ int agc_init(struct demod_state *s)
 	agc = malloc(sizeof(struct agc_state));
 	s->agc = agc;
 
-	agc->gain_den = 1<<16;
+	agc->gain_den = 1<<15;
 	agc->gain_num = agc->gain_den;
 	agc->peak_target = 1<<14;
 	agc->gain_max = 256 * agc->gain_den;
