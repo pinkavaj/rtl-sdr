@@ -927,7 +927,8 @@ static void *demod_thread_fn(void *arg)
 		if (d->exit_flag) {
 			do_exit = 1;
 		}
-		if (d->squelch_level && d->squelch_hits > d->conseq_squelch) {
+		if (controller.freq_len > 1 && d->squelch_level && \
+		    d->squelch_hits > d->conseq_squelch) {
 			unmark_shared_buffer(d->lowpassed);
 			d->squelch_hits = d->conseq_squelch + 1;  /* hair trigger */
 			safe_cond_signal(&controller.hop, &controller.hop_m);
