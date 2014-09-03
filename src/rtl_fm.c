@@ -30,7 +30,6 @@
  *
  * todo:
  *       sanity checks
- *       pad output on hop
  *       frequency ranges could be stored better
  *       auto-hop after time limit
  *       peak detector to tune onto stronger signals
@@ -188,6 +187,8 @@ struct output_state
 	pthread_rwlock_t rw;
 	pthread_cond_t ready;
 	pthread_mutex_t ready_m;
+	pthread_mutex_t trycond_m;
+	int      trycond;
 };
 
 struct controller_state
@@ -238,7 +239,9 @@ void usage(void)
 		"\t    no-mod: enable no-mod direct sampling\n"
 		"\t    offset: enable offset tuning\n"
 		"\t    wav:    generate WAV header\n"
-		"\t    pad:    pad output with zeros (broken)\n"
+#ifndef _WIN32
+		"\t    pad:    pad output gaps with zeros\n"
+#endif
 		"\tfilename ('-' means stdout)\n"
 		"\t    omitting the filename also uses stdout\n\n"
 		"Experimental options:\n"
@@ -927,6 +930,10 @@ static void *demod_thread_fn(void *arg)
 		if (d->exit_flag) {
 			do_exit = 1;
 		}
+		pthread_rwlock_wrlock(&o->rw);
+		o->result = d->lowpassed;
+		o->result_len = d->lp_len;
+		pthread_rwlock_unlock(&o->rw);
 		if (controller.freq_len > 1 && d->squelch_level && \
 		    d->squelch_hits > d->conseq_squelch) {
 			unmark_shared_buffer(d->lowpassed);
@@ -934,11 +941,10 @@ static void *demod_thread_fn(void *arg)
 			safe_cond_signal(&controller.hop, &controller.hop_m);
 			continue;
 		}
-		pthread_rwlock_wrlock(&o->rw);
-		o->result = d->lowpassed;
-		o->result_len = d->lp_len;
-		pthread_rwlock_unlock(&o->rw);
 		safe_cond_signal(&o->ready, &o->ready_m);
+		pthread_mutex_lock(&o->trycond_m);
+		o->trycond = 0;
+		pthread_mutex_unlock(&o->trycond_m);
 	}
 	return 0;
 }
@@ -954,7 +960,7 @@ static int get_nanotime(struct timespec *ts)
 
 	rv = gettimeofday(&tv, NULL);
 	ts->tv_sec = tv.tv_sec;
-	ts->tv_nsec = tv.tv_usec * 1000;
+	ts->tv_nsec = tv.tv_usec * 1000L;
 #endif
 	return rv;
 }
@@ -964,11 +970,9 @@ static void *output_thread_fn(void *arg)
 {
 	int r = 0;
 	struct output_state *s = arg;
-	//struct timespec abstime;
 	struct timespec start_time;
 	struct timespec now_time;
-	struct timespec fut_time;
-	int64_t interval, delay, samples, samples2, i;
+	int64_t i, duration, samples, samples_now;
 	samples = 0L;
 #ifndef _WIN32
 	get_nanotime(&start_time);
@@ -984,34 +988,33 @@ static void *output_thread_fn(void *arg)
 		}
 #ifndef _WIN32
 		/* padding requires output at constant rate */
-		/* figure out how to do this with windows HPET */
-		pthread_mutex_lock(&s->ready_m);
-		delay = 1000000000L * (int64_t)s->result_len / (int64_t)s->rate;
-		get_nanotime(&fut_time);
-		fut_time.tv_nsec += delay;
-		r = pthread_cond_timedwait(&s->ready, &s->ready_m, &fut_time);
-		pthread_mutex_unlock(&s->ready_m);
-		if (r != ETIMEDOUT) {
+		/* pthread_cond_timedwait is terrible, roll our own trycond */
+		// figure out how to do this with windows HPET
+		usleep(2000);
+		pthread_mutex_lock(&s->trycond_m);
+		r = s->trycond;
+		s->trycond = 1;
+		pthread_mutex_unlock(&s->trycond_m);
+		if (r == 0) {
 			pthread_rwlock_rdlock(&s->rw);
 			fwrite(s->result, 2, s->result_len, s->file);
 			unmark_shared_buffer(s->result);
-			samples += s->result_len;
+			samples += (int64_t)s->result_len;
 			pthread_rwlock_unlock(&s->rw);
 			continue;
 		}
 		get_nanotime(&now_time);
-		interval = now_time.tv_sec - start_time.tv_sec;
-		interval *= 1000000000L;
-		interval += (now_time.tv_nsec - start_time.tv_nsec);
-		samples2 = interval * (int64_t)s->rate / 1000000000L;
-		samples2 -= samples;
-		//fprintf(stderr, "%lli %lli %lli\n", delay, interval, samples);
-		/* there must be a better way to write zeros */
-		for (i=0L; i<samples2; i++) {
+		duration = now_time.tv_sec - start_time.tv_sec;
+		duration *= 1000000000L;
+		duration += (now_time.tv_nsec - start_time.tv_nsec);
+		samples_now = (duration * (int64_t)s->rate) / 1000000000L;
+		if (samples_now < samples) {
+			continue;}
+		for (i=samples; i<samples_now; i++) {
 			fputc(0, s->file);
 			fputc(0, s->file);
 		}
-		samples += samples2;
+		samples = samples_now;
 #endif
 	}
 	return 0;
@@ -1163,6 +1166,8 @@ void output_init(struct output_state *s)
 	pthread_rwlock_init(&s->rw, NULL);
 	pthread_cond_init(&s->ready, NULL);
 	pthread_mutex_init(&s->ready_m, NULL);
+	pthread_mutex_init(&s->trycond_m, NULL);
+	s->trycond = 1;
 	s->result = NULL;
 }
 
@@ -1171,6 +1176,7 @@ void output_cleanup(struct output_state *s)
 	pthread_rwlock_destroy(&s->rw);
 	pthread_cond_destroy(&s->ready);
 	pthread_mutex_destroy(&s->ready_m);
+	pthread_mutex_destroy(&s->trycond_m);
 }
 
 void controller_init(struct controller_state *s)
@@ -1430,6 +1436,7 @@ int main(int argc, char **argv)
 	signal(SIGPIPE, SIG_IGN);
 #else
 	SetConsoleCtrlHandler( (PHANDLER_ROUTINE) sighandler, TRUE );
+	output.padded = 0;
 #endif
 
 	if (demod.deemph) {
