@@ -596,7 +596,7 @@ int atan_lut_init(void)
 	atan_lut = malloc(atan_lut_size * sizeof(int));
 
 	for (i = 0; i < atan_lut_size; i++) {
-		atan_lut[i] = (int) (atan((double) i / (1<<atan_lut_coef)) / 3.14159 * (1<<14));
+		atan_lut[i] = (int) (atan((double) i / (1<<atan_lut_coef)) / M_PI * (1<<14));
 	}
 
 	return 0;
@@ -967,6 +967,7 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 		pthread_rwlock_wrlock(&d2->rw);
 		d2->lowpassed = mark_shared_buffer();
 		memcpy(d2->lowpassed, s->buf16, 2*len);
+		d2->lp_len = len;
 		pthread_rwlock_unlock(&d2->rw);
 		safe_cond_signal(&d2->ready, &d2->ready_m);
 	}
@@ -1135,6 +1136,30 @@ static void optimal_settings(int freq, int rate)
 	//translate_init(&demod.rotate);
 }
 
+void clone_demod(struct demod_state *d2, struct demod_state *d1)
+/* copy from d1 to d2 */
+{
+	d2->rate_in = d1->rate_in;
+	d2->rate_out = d1->rate_out;
+	d2->rate_out2 = d1->rate_out2;
+	d2->downsample = d1->downsample;
+	d2->downsample_passes = d1->downsample_passes;
+	d2->post_downsample = d1->post_downsample;
+	d2->output_scale = d1->output_scale;
+	d2->squelch_level = d1->squelch_level;
+	d2->conseq_squelch = d1->conseq_squelch;
+	d2->squelch_hits = d1->squelch_hits;
+	d2->terminate_on_squelch = d1->terminate_on_squelch;
+	d2->comp_fir_size = d1->comp_fir_size;
+	d2->custom_atan = d1->custom_atan;
+	d2->deemph = d1->deemph;
+	d2->deemph_a = d1->deemph_a;
+	d2->dc_block = d1->dc_block;
+	d2->rotate_enable = d1->rotate_enable;
+	d2->agc_enable = d1->agc_enable;
+	d2->mode_demod = d1->mode_demod;
+}
+
 void optimal_lrmix(void)
 {
 	double angle1, angle2;
@@ -1157,7 +1182,8 @@ void optimal_lrmix(void)
 	dongle.pre_rotate = 0;
 	optimal_settings(freq, bw);
 	output.padded = 0;
-	demod2 = demod;
+	clone_demod(&demod2, &demod);
+	//demod2 = demod;
 	demod2.output_target = &output.results[1];
 	dongle.targets[1] = &demod2;
 	dongle_bw = dongle.rate;
@@ -1167,13 +1193,12 @@ void optimal_lrmix(void)
 		exit(1);
 	}
 	angle1 = ((double)freq1 - (double)freq) / (double)dongle_bw;
-	angle1 *= 2 * 3.14159;
-	demod.rotate.angle = angle1;
+	demod.rotate.angle = angle1 * 2 * M_PI;
 	angle2 = ((double)freq2 - (double)freq) / (double)dongle_bw;
-	angle2 *= 2 * 3.14159;
-	demod2.rotate.angle = angle2;
+	demod2.rotate.angle = angle2 * 2 * M_PI;
 	translate_init(&demod.rotate);
 	translate_init(&demod2.rotate);
+	//fprintf(stderr, "a1 %f, a2 %f\n", angle1, angle2);
 }
 
 static void *controller_thread_fn(void *arg)
@@ -1427,6 +1452,7 @@ int main(int argc, char **argv)
 
 	dongle_init(&dongle);
 	demod_init(&demod);
+	demod_init(&demod2);
 	agc_init(&demod);
 	output_init(&output);
 	controller_init(&controller);
