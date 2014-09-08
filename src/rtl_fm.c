@@ -133,6 +133,14 @@ struct agc_state
 	int     error;
 };
 
+struct translate_state
+{
+	double angle;  /* radians */
+	int16_t *sincos;  /* pairs */
+	int len;
+	int i;
+};
+
 struct demod_state
 {
 	int      exit_flag;
@@ -161,11 +169,7 @@ struct demod_state
 	int      prev_lpr_index;
 	int      dc_block, dc_avg;
 	int      rotate_enable;
-	double   rotate_angle;
-	int32_t  angle_a;  /* constant, cos(rotate_angle) * ONE_INT */
-	int32_t  angle_b;  /* constant, sin(rotate_angle) * ONE_INT */
-	int32_t  angle_sin;  /* iterative */
-	int32_t  angle_cos;
+	struct   translate_state rotate;
 	int      agc_enable;
 	struct   agc_state *agc;
 	void     (*mode_demod)(struct demod_state*);
@@ -348,59 +352,76 @@ void rotate_90(unsigned char *buf, uint32_t len)
 	}
 }
 
-void translate_init(struct demod_state *d, double angle)
-/* angle in radians */
+int translate_init(struct translate_state *ts)
+/* two pass: first to find optimal length, second to alloc/fill */
 {
-	d->rotate_enable = 1;
-	d->rotate_angle = angle;
-	d->angle_a = (int32_t)(cos(angle) * ONE_INT);
-	d->angle_b = (int32_t)(sin(angle) * ONE_INT);
-	d->angle_sin = 0;
-	d->angle_cos = ONE_INT;
+	int max_length = 100000;
+	int i, s, c, best_i;
+	double a, a2, err, best_360;
+	if (fabs(ts->angle) < 2*M_PI/max_length) {
+		fprintf(stderr, "angle too small or array too short\n");
+		return 1;
+	}
+	ts->i = 0;
+	ts->sincos = NULL;
+	if (ts->len) {
+		max_length = ts->len;
+		ts->sincos = malloc(max_length * sizeof(int16_t));
+	}
+	a = 0.0;
+	err = 0.0;
+	best_i = 0;
+	best_360 = 4.0;
+	for (i=0; i < max_length; i+=2) {
+		s = (int)round(sin(a + err) * (1<<14));
+		c = (int)round(cos(a + err) * (1<<14));
+		a2 = atan2(s, c);
+		err = fmod(a, 2*M_PI) - a2;
+		a += ts->angle;
+		while (a > M_PI) {
+			a -= 2*M_PI;}
+		while (a < -M_PI) {
+			a += 2*M_PI;}
+		if (i != 0 && fabs(a) < best_360) {
+			best_i = i;
+			best_360 = fabs(a);
+		}
+		if (i != 0 && fabs(a) < 0.0000001) {
+			break;}
+		if (ts->sincos) {
+			ts->sincos[i] = s;
+			ts->sincos[i+1] = c;
+			//fprintf(stderr, "%i   %i %i\n", i, s, c);
+		}
+	}
+	if (ts->sincos) {
+		return 0;
+	}
+	ts->len = best_i + 2;
+	return translate_init(ts);
 }
 
 void translate(struct demod_state *d)
 {
-	int i, len;
-	int32_t old_s, old_c, new_s, new_c, angle_a, angle_b, tmp;
+	int i, len, sc_i, sc_len;
+	int32_t tmp, ar, aj, br, bj;
 	int16_t *buf = d->lowpassed;
+	int16_t *sincos = d->rotate.sincos;
 	len = d->lp_len;
-	old_s = d->angle_sin;
-	old_c = d->angle_cos;
-	angle_a = d->angle_a;
-	angle_b = d->angle_b;
-	for (i=0; i<len; i+=2) {
-		//buf[i]   = (int16_t)(((int32_t)buf[i] * old_c) >> 14);
-		//buf[i+1] = (int16_t)(((int32_t)buf[i+1] * old_s) >> 14);
-		//new_s = (angle_b * old_c + angle_a * old_s) >> 14;
-		//new_c = (angle_a * old_c + angle_b * old_s) >> 14;
-		tmp = (int32_t)buf[i] * old_c;
-		if (tmp % (1<<14) > (1<<13)) {
-			tmp += (1<<13);}
+	sc_i = d->rotate.i;
+	sc_len = d->rotate.len;
+	for (i=0; i<len; i+=2, sc_i+=2) {
+		sc_i = sc_i % sc_len;
+		ar = (int32_t)buf[i];
+		aj = (int32_t)buf[i+1];
+		br = (int32_t)sincos[sc_i];
+		bj = (int32_t)sincos[sc_i+1];
+		tmp = ar*br - aj*bj;
 		buf[i]   = (int16_t)(tmp >> 14);
-
-		tmp = (int32_t)buf[i+1] * old_s;
-		if (tmp % (1<<14) > (1<<13)) {
-			tmp += (1<<13);}
+		tmp = aj*br + ar*bj;
 		buf[i+1]   = (int16_t)(tmp >> 14);
-
-		tmp = angle_b * old_c + angle_a * old_s;
-		if (tmp % (1<<14) > (1<<13)) {
-			tmp += (1<<13);}
-		new_s = (int16_t)(tmp >> 14);
-
-		tmp = angle_a * old_c + angle_b * old_s;
-		if (tmp % (1<<14) > (1<<13)) {
-			tmp += (1<<13);}
-		new_c = (int16_t)(tmp >> 14);
-
-		old_s = new_s;
-		old_c = new_c;
-
-		//fprintf(stderr, "%i %i\n", new_s, new_c);
 	}
-	d->angle_sin = old_s;
-	d->angle_cos = old_c;
+	d->rotate.i = sc_i;
 }
 
 void low_pass(struct demod_state *d)
@@ -535,7 +556,7 @@ int polar_discriminant(int ar, int aj, int br, int bj)
 	double angle;
 	multiply(ar, aj, br, -bj, &cr, &cj);
 	angle = atan2((double)cj, (double)cr);
-	return (int)(angle / 3.14159 * (1<<14));
+	return (int)(angle / M_PI * (1<<14));
 }
 
 int fast_atan2(int y, int x)
@@ -1108,8 +1129,10 @@ static void optimal_settings(int freq, int rate)
 		dm->output_scale = 1;}
 	d->freq = (uint32_t)capture_freq;
 	d->rate = (uint32_t)capture_rate;
-	//translate_init(&demod, 0.25 * 2 * 3.14159);
 	//d->pre_rotate = 0;
+	//demod.rotate_enable = 1;
+	//demod.rotate.angle = -0.25 * 2 * M_PI;
+	//translate_init(&demod.rotate);
 }
 
 void optimal_lrmix(void)
@@ -1145,10 +1168,12 @@ void optimal_lrmix(void)
 	}
 	angle1 = ((double)freq1 - (double)freq) / (double)dongle_bw;
 	angle1 *= 2 * 3.14159;
+	demod.rotate.angle = angle1;
 	angle2 = ((double)freq2 - (double)freq) / (double)dongle_bw;
 	angle2 *= 2 * 3.14159;
-	translate_init(&demod, angle1);
-	translate_init(&demod2, angle2);
+	demod2.rotate.angle = angle2;
+	translate_init(&demod.rotate);
+	translate_init(&demod2.rotate);
 }
 
 static void *controller_thread_fn(void *arg)
@@ -1250,6 +1275,9 @@ void demod_init(struct demod_state *s)
 	s->custom_atan = 0;
 	s->deemph = 0;
 	s->agc_enable = 0;
+	s->rotate_enable = 0;
+	s->rotate.len = 0;
+	s->rotate.sincos = NULL;
 	s->rate_out2 = -1;  // flag for disabled
 	s->mode_demod = &fm_demod;
 	s->pre_j = s->pre_r = s->now_r = s->now_j = 0;
@@ -1396,6 +1424,7 @@ int main(int argc, char **argv)
 	int r, opt;
 	int dev_given = 0;
 	int custom_ppm = 0;
+
 	dongle_init(&dongle);
 	demod_init(&demod);
 	agc_init(&demod);
