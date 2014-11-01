@@ -55,6 +55,21 @@
 
 #define SCAN_LIMIT			2500000000
 
+struct time_generic
+/* holds all the platform specific values */
+{
+#ifndef _WIN32
+	time_t tv_sec;
+	long tv_nsec;
+#else
+	long tv_sec;
+	long tv_nsec;
+	int init;
+	LARGE_INTEGER frequency;
+	LARGE_INTEGER ticks;
+#endif
+};
+
 static enum {
 	NO_BENCHMARK,
 	TUNER_BENCHMARK,
@@ -79,9 +94,7 @@ void usage(void)
 		"\t[-s samplerate (default: 2048000 Hz)]\n"
 		"\t[-d device_index (default: 0)]\n"
 		"\t[-t enable tuner range benchmark]\n"
-#ifndef _WIN32
 		"\t[-p[seconds] enable PPM error measurement (default: 10 seconds)]\n"
-#endif
 		"\t[-b output_block_size (default: 16 * 16384)]\n"
 		"\t[-S force sync output (default: async)]\n");
 	exit(1);
@@ -136,12 +149,15 @@ static void underrun_test(unsigned char *buf, uint32_t len, int mute)
 }
 
 #ifndef _WIN32
-static int ppm_gettime(struct timespec *ts)
+static int ppm_gettime(struct time_generic *tg)
 {
 	int rv = ENOSYS;
+	struct timespec ts;
 
 #ifdef __unix__
-	rv = clock_gettime(CLOCK_MONOTONIC, ts);
+	rv = clock_gettime(CLOCK_MONOTONIC, &ts);
+	tg->tv_sec = ts.tv_sec;
+	tg->tv_nsec = ts.tv_nsec;
 #elif __APPLE__
 	struct timeval tv;
 
@@ -151,6 +167,24 @@ static int ppm_gettime(struct timespec *ts)
 #endif
 	return rv;
 }
+#endif
+
+#ifdef _WIN32
+static int ppm_gettime(struct time_generic *tg)
+{
+	int rv;
+	int64_t frac;
+	if (!tg->init) {
+		QueryPerformanceFrequency(&tg->frequency);
+		tg->init = 1;
+	}
+	rv = QueryPerformanceCounter(&tg->ticks);
+	tg->tv_sec = tg->ticks.QuadPart / tg->frequency.QuadPart;
+	frac = (int64_t)(tg->ticks.QuadPart - (tg->tv_sec * tg->frequency.QuadPart));
+	tg->tv_nsec = (long)(frac * 1000000000L / (int64_t)tg->frequency.QuadPart);
+	return !rv;
+}
+#endif
 
 static int ppm_report(uint64_t nsamples, uint64_t interval)
 {
@@ -167,8 +201,9 @@ static void ppm_test(uint32_t len)
 	static uint64_t interval = 0;
 	static uint64_t nsamples_total = 0;
 	static uint64_t interval_total = 0;
-	struct timespec ppm_now;
-	static struct timespec ppm_recent;
+	static struct time_generic ppm_now;
+	static struct time_generic ppm_recent;
+
 	static enum {
 		PPM_INIT_NO,
 		PPM_INIT_DUMP,
@@ -176,6 +211,7 @@ static void ppm_test(uint32_t len)
 	} ppm_init = PPM_INIT_NO;
 
 	ppm_gettime(&ppm_now);
+
 	if (ppm_init != PPM_INIT_RUN) {
 		/*
 		 * Kyle Keen wrote:
@@ -191,8 +227,7 @@ static void ppm_test(uint32_t len)
 		}
 		if (ppm_init == PPM_INIT_DUMP && ppm_recent.tv_sec < ppm_now.tv_sec)
 			return;
-		ppm_recent.tv_sec = ppm_now.tv_sec;
-		ppm_recent.tv_nsec = ppm_now.tv_nsec;
+		ppm_recent = ppm_now;
 		ppm_init = PPM_INIT_RUN;
 		return;
 	}
@@ -202,25 +237,22 @@ static void ppm_test(uint32_t len)
 		return;
 	interval *= 1000000000UL;
 	interval += (int64_t)(ppm_now.tv_nsec - ppm_recent.tv_nsec);
+
 	nsamples_total += nsamples;
 	interval_total += interval;
 	printf("real sample rate: %i current PPM: %i cumulative PPM: %i\n",
 		(int)((1000000000UL * nsamples) / interval),
 		ppm_report(nsamples, interval),
 		ppm_report(nsamples_total, interval_total));
-	ppm_recent.tv_sec = ppm_now.tv_sec;
-	ppm_recent.tv_nsec = ppm_now.tv_nsec;
+	ppm_recent = ppm_now;
 	nsamples = 0;
 }
-#endif
 
 static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 {
 	underrun_test(buf, len, 0);
-#ifndef _WIN32
 	if (test_mode == PPM_BENCHMARK)
 		ppm_test(len);
-#endif
 }
 
 /* smallest band or band gap that tuner_benchmark() will notice */
@@ -415,7 +447,7 @@ int main(int argc, char **argv)
 	verbose_reset_buffer(dev);
 
 	if ((test_mode == PPM_BENCHMARK) && !sync_mode) {
-		fprintf(stderr, "Reporting PPM error measurement every %i seconds...\n", ppm_duration);
+		fprintf(stderr, "Reporting PPM error measurement every %u seconds...\n", ppm_duration);
 		fprintf(stderr, "Press ^C after a few minutes.\n");
 	}
 
