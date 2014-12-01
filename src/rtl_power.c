@@ -971,7 +971,9 @@ void csv_dbm(struct tuning_state *ts)
 		}
 		dbm  = (double)ts->avg[i];
 		dbm /= (double)ts->rate;
-		dbm /= (double)ts->samples;
+		if (!ts->peak_hold) {
+			dbm /= (double)ts->samples;
+		}
 		if (ts->linear) {
 			fprintf(file, "%.5g%s", dbm, sep);
 		} else {
