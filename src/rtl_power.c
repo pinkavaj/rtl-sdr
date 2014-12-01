@@ -552,9 +552,32 @@ int solve_downsample(struct channel_solve *c, int target_rate, int boxcar)
 	return 0;
 }
 
+int solve_single(struct channel_solve *c, int target_rate)
+{
+	int i, scan_size, bins_all, bins_crop, bin_e, bins_2, bw_needed;
+	scan_size = c->upper - c->lower;
+	bins_all = scan_size / c->bin_spec;
+	bins_crop = (int)ceil((double)bins_all * (1.0 + c->crop));
+	bin_e = (int)ceil(log2(bins_crop));
+	bins_2 = 1 << bin_e;
+	bw_needed = bins_2 * c->bin_spec;
+
+	if (bw_needed > target_rate) {
+		/* actually multi-hop */
+		return 1;}
+
+	c->bw_wanted = scan_size;
+	c->bw_needed = bw_needed;
+	c->hops = 1;
+	c->bin_e = bin_e;
+	/* crop will always be bigger than specified crop */
+	c->crop_tmp = (double)(bins_2 - bins_all) / (double)bins_2;
+	return 0;
+}
+
 int solve_hopping(struct channel_solve *c, int target_rate)
 {
-	int i, scan_size, bins_all, bins_crop, bins_2, min_hops;
+	int i, scan_size, bins_all, bins_sub, bins_crop, bins_2, min_hops;
 	scan_size = c->upper - c->lower;
 	min_hops = scan_size / MAXIMUM_RATE - 1;
 	if (min_hops < 1) {
@@ -563,11 +586,12 @@ int solve_hopping(struct channel_solve *c, int target_rate)
 	for (i=min_hops; i<MAX_TUNES; i++) {
 		c->bw_wanted = scan_size / i;
 		bins_all = scan_size / c->bin_spec;
-		bins_crop = (int)ceil((double)bins_all / (double)i);
+		bins_sub = (int)ceil((double)bins_all / (double)i);
+		bins_crop = (int)ceil((double)bins_sub * (1.0 + c->crop));
 		c->bin_e = (int)ceil(log2(bins_crop));
 		bins_2 = 1 << c->bin_e;
 		c->bw_needed = bins_2 * c->bin_spec;
-		c->crop_tmp = (double)(bins_2 - bins_crop) / (double)bins_2;
+		c->crop_tmp = (double)(bins_2 - bins_sub) / (double)bins_2;
 		if (c->bw_needed > target_rate) {
 			continue;}
 		if (c->crop_tmp < c->crop) {
@@ -583,7 +607,7 @@ void frequency_range(char *arg, struct misc_settings *ms)
 {
 	struct channel_solve c;
 	struct tuning_state *ts;
-	int i, j, buf_len, length, hop_bins, logged_bins, planned_bins;
+	int r, i, j, buf_len, length, hop_bins, logged_bins, planned_bins;
 	int lower_edge, actual_bw, upper_perfect, remainder;
 
 	fprintf(stderr, "Range: %s\n", arg);
@@ -603,15 +627,24 @@ void frequency_range(char *arg, struct misc_settings *ms)
 		exit(1);
 	}
 
-
+	r = -1;
 	if (c.bin_spec >= MINIMUM_RATE) {
 		fprintf(stderr, "Mode: rms power\n");
 		solve_giant_bins(&c);
 	} else if ((c.upper - c.lower) < MINIMUM_RATE) {
 		fprintf(stderr, "Mode: downsampling\n");
 		solve_downsample(&c, ms->target_rate, ms->boxcar);
+	} else if ((c.upper - c.lower) < MAXIMUM_RATE) {
+		r = solve_single(&c, ms->target_rate);
 	} else {
-		fprintf(stderr, "Mode: normal\n");
+		fprintf(stderr, "Mode: hopping\n");
+		solve_hopping(&c, ms->target_rate);
+	}
+
+	if (r == 0) {
+		fprintf(stderr, "Mode: single\n");
+	} else if (r == 1) {
+		fprintf(stderr, "Mode: hopping\n");
 		solve_hopping(&c, ms->target_rate);
 	}
 	c.crop = c.crop_tmp;
