@@ -103,6 +103,13 @@ static int atan_lut_coef = 8;
 int16_t shared_samples[SHARED_SIZE][MAXIMUM_BUF_LENGTH];
 int ss_busy[SHARED_SIZE] = {0};
 
+enum agc_mode_t
+{
+	agc_off = 0,
+	agc_normal,
+	agc_aggressive
+};
+
 struct dongle_state
 {
 	int      exit_flag;
@@ -170,7 +177,7 @@ struct demod_state
 	int      dc_block, dc_avg;
 	int      rotate_enable;
 	struct   translate_state rotate;
-	int      agc_enable;
+	enum	 agc_mode_t agc_mode;
 	struct   agc_state *agc;
 	void     (*mode_demod)(struct demod_state*);
 	pthread_rwlock_t rw;
@@ -248,6 +255,7 @@ void usage(void)
 		"\t    no-dc:  disable dc blocking filter\n"
 		"\t    deemp:  enable de-emphasis filter\n"
 		"\t    swagc:  enable software agc (only for AM modes)\n"
+		"\t    swagc-aggressive:  enable aggressive software agc (only for AM modes)\n"
 		"\t    direct: enable direct sampling\n"
 		"\t    no-mod: enable no-mod direct sampling\n"
 		"\t    offset: enable offset tuning\n"
@@ -823,19 +831,31 @@ void software_agc(struct demod_state *d)
 {
 	int i = 0;
 	int peaked = 0;
-	int32_t output;
+	int32_t output = 0;
+	int abs_output = 0;
 	struct agc_state *agc = d->agc;
 	int16_t *lp = d->lowpassed;
+	int attack_step = agc->attack_step;
+	int aggressive = agc_aggressive == d->agc_mode;
+	float peak_factor = 1.0;
 
 	for (i=0; i < d->lp_len; i++) {
 		output = (int32_t)lp[i] * agc->gain_num + agc->error;
 		agc->error = output % agc->gain_den;
 		output /= agc->gain_den;
+		abs_output = abs(output);
+		peaked = abs_output > agc->peak_target;
+		
+		if (peaked && aggressive && attack_step <= 1) {
+			peak_factor = fmin(5.0, (float) abs_output / agc->peak_target);
+			attack_step = (int) (pow(agc->attack_step - peak_factor, peak_factor) * (176 + 3 * peak_factor));
+		}
 
-		if (!peaked && abs(output) > agc->peak_target) {
-			peaked = 1;}
 		if (peaked) {
-			agc->gain_num += agc->attack_step;
+			agc->gain_num -= attack_step;
+			if (aggressive) { 
+				attack_step = (int) (attack_step / 1.2); 
+			}
 		} else {
 			agc->gain_num += agc->decay_step;
 		}
@@ -901,7 +921,7 @@ void full_demod(struct demod_state *d)
 		return;}
 	if (d->dc_block) {
 		dc_block_filter(d);}
-	if (d->agc_enable) {
+	if (d->agc_mode != agc_off) {
 		software_agc(d);}
 	/* todo, fm noise squelch */
 	// use nicer filter here too?
@@ -1167,7 +1187,7 @@ void clone_demod(struct demod_state *d2, struct demod_state *d1)
 	d2->deemph_a = d1->deemph_a;
 	d2->dc_block = d1->dc_block;
 	d2->rotate_enable = d1->rotate_enable;
-	d2->agc_enable = d1->agc_enable;
+	d2->agc_mode = d1->agc_mode;
 	d2->mode_demod = d1->mode_demod;
 }
 
@@ -1310,7 +1330,7 @@ void demod_init(struct demod_state *s)
 	s->post_downsample = 1;  // once this works, default = 4
 	s->custom_atan = 0;
 	s->deemph = 0;
-	s->agc_enable = 0;
+	s->agc_mode = agc_off;
 	s->rotate_enable = 0;
 	s->rotate.len = 0;
 	s->rotate.sincos = NULL;
@@ -1409,11 +1429,16 @@ int agc_init(struct demod_state *s)
 	s->agc = agc;
 
 	agc->gain_den = 1<<15;
-	agc->gain_num = agc->gain_den;
 	agc->peak_target = 1<<14;
 	agc->gain_max = 256 * agc->gain_den;
-	agc->decay_step = 1;
-	agc->attack_step = -2;
+	agc->gain_num = agc->gain_den;
+	agc->decay_step = 1; 
+	agc->attack_step = 2; 
+	if (s->agc_mode == agc_aggressive) {
+		agc->decay_step = agc->decay_step * 4; 
+		agc->attack_step = agc->attack_step * 5; 
+	}
+
 	return 0;
 }
 
@@ -1463,7 +1488,6 @@ int main(int argc, char **argv)
 	dongle_init(&dongle);
 	demod_init(&demod);
 	demod_init(&demod2);
-	agc_init(&demod);
 	output_init(&output);
 	controller_init(&controller);
 
@@ -1523,7 +1547,9 @@ int main(int argc, char **argv)
 			if (strcmp("deemp",  optarg) == 0) {
 				demod.deemph = 1;}
 			if (strcmp("swagc",  optarg) == 0) {
-				demod.agc_enable = 1;}
+				demod.agc_mode = agc_normal;}
+			if (strcmp("swagc-aggressive",  optarg) == 0) {
+				demod.agc_mode = agc_aggressive;}
 			if (strcmp("direct",  optarg) == 0) {
 				dongle.direct_sampling = 1;}
 			if (strcmp("no-mod",  optarg) == 0) {
@@ -1582,6 +1608,8 @@ int main(int argc, char **argv)
 			break;
 		}
 	}
+
+	agc_init(&demod);
 
 	/* quadruple sample_rate to limit to Δθ to ±π/2 */
 	demod.rate_in *= demod.post_downsample;
