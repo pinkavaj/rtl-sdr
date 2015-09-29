@@ -3535,6 +3535,26 @@ static void rtlsdr_process_env_opts(rtlsdr_dev_t *dev)
 }
 
 
+void rtlsdr_read_confirm(rtlsdr_dev_t *dev, unsigned char *buf)
+{
+    int r;
+    uint32_t i = 0;
+    for ( ; i < dev->xfer_buf_num; ++i) {
+        if (buf == dev->xfer_buf[i])
+            break;
+    }
+    if (i == dev->xfer_buf_num) {
+        fprintf(stderr, "Confirm for non-existing buffer %p\n", buf);
+        return;
+    }
+
+	r = libusb_submit_transfer(dev->xfer[i]);
+	if (r < 0) {
+		fprintf(stderr, "Failed to submit transfer %i!\n", i);
+		dev->async_status = RTLSDR_CANCELING;
+	}
+}
+
 int rtlsdr_read_sync(rtlsdr_dev_t *dev, void *buf, int len, int *n_read)
 {
 	if (dev && !dev->called_set_opt )
@@ -3814,16 +3834,32 @@ static int softagc(rtlsdr_dev_t *dev, unsigned char *buf, int len)
 static void LIBUSB_CALL _libusb_callback(struct libusb_transfer *xfer)
 {
 	rtlsdr_dev_t *dev = (rtlsdr_dev_t *)xfer->user_data;
+	int r;
 
 	if (LIBUSB_TRANSFER_COMPLETED == xfer->status) {
 		int keepBlock = 1;
 		if ( dev->softagc.agcState != SOFTSTATE_OFF )
 			keepBlock = softagc(dev, xfer->buffer, xfer->actual_length);
 
-		if (dev->cb && keepBlock)
-			dev->cb(xfer->buffer, xfer->actual_length, dev->cb_ctx);
+		if (dev->cb && keepBlock) {
+			switch (dev->cb(xfer->buffer, xfer->actual_length, dev->cb_ctx)) {
+				default:
+				case 0:
+					r = libusb_submit_transfer(xfer); /* resubmit transfer */
+					if (r < 0) {
+						fprintf(stderr, "Failed to re-submit transfer!\n");
+						dev->async_status = RTLSDR_CANCELING;
+						break;
+					}
+					break;
 
-		libusb_submit_transfer(xfer); /* resubmit transfer */
+				case 1:
+					break;
+
+				case -1:
+					rtlsdr_cancel_async(dev);
+			}
+		}
 		dev->xfer_errors = 0;
 	} else if (LIBUSB_TRANSFER_CANCELLED != xfer->status) {
 #ifndef _WIN32
