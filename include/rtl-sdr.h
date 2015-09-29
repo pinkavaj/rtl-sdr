@@ -520,6 +520,20 @@ RTLSDR_API int rtlsdr_reset_buffer(rtlsdr_dev_t *dev);
  */
 RTLSDR_API int rtlsdr_read_sync(rtlsdr_dev_t *dev, void *buf, int len, int *n_read);
 
+/*!
+ * Release buffer when asynchronous read callback returns 1.
+ */
+RTLSDR_API void rtlsdr_read_confirm(rtlsdr_dev_t *dev, unsigned char *buf);
+
+/*!
+ * Callback function for asynchronous reading.
+ *
+ * \return Status indication:
+ *          0 when data from buffer have been processed.
+ *         -1 on error, all transfers are cancelled.
+ *          1 when buffer is still in use. Buffer should be released with
+ *         rtlsdr_read_confirm.
+ */
 typedef int (*rtlsdr_read_async_cb_t)(unsigned char *buf, uint32_t len, void *ctx);
 
 /*!
