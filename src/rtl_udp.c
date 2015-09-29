@@ -169,7 +169,7 @@ static void sighandler(int signum)
 }
 #endif
 
-void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
+int rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 {
 	if(!do_exit) {
 		struct llist *rpt = (struct llist*)malloc(sizeof(struct llist));
@@ -215,6 +215,7 @@ void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 		pthread_cond_signal(&cond);
 		pthread_mutex_unlock(&ll_mutex);
 	}
+    return 0;
 }
 
 static void *udp_worker(void *arg)

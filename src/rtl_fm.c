@@ -1314,7 +1314,7 @@ void full_demod(struct demod_state *d)
 	}
 }
 
-static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
+static int rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 {
 	struct dongle_state *s = ctx;
 	struct demod_state *d = s->demod_target;
@@ -1326,9 +1326,9 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 	time_t rawtime;
 
 	if (do_exit) {
-		return;}
+		return 0;}
 	if (!ctx) {
-		return;}
+		return 0;}
 	time(&rawtime);
 	if (duration > 0 && rawtime >= stop_time) {
 		do_exit = 1;
@@ -1380,7 +1380,7 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 		dc_block_raw_filter(d, s->buf16, (int)len);
 	}
 	if (muteLen && c->filename)
-		return;	/* "mute" after the dc_block_raw_filter(), giving it time to remove the new DC */
+		return 0;	/* "mute" after the dc_block_raw_filter(), giving it time to remove the new DC */
 	/* 3rd: down-mixing */
 	if (!s->offset_tuning) {
 		rotate16_neg90(s->buf16, (int)len);
@@ -1390,6 +1390,8 @@ static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 	d->lp_len = len;
 	pthread_rwlock_unlock(&d->rw);
 	safe_cond_signal(&d->ready, &d->ready_m);
+
+	return 0;
 }
 
 static void *dongle_thread_fn(void *arg)
