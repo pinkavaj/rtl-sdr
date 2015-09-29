@@ -520,7 +520,7 @@ RTLSDR_API int rtlsdr_reset_buffer(rtlsdr_dev_t *dev);
  */
 RTLSDR_API int rtlsdr_read_sync(rtlsdr_dev_t *dev, void *buf, int len, int *n_read);
 
-typedef void(*rtlsdr_read_async_cb_t)(unsigned char *buf, uint32_t len, void *ctx);
+typedef int (*rtlsdr_read_async_cb_t)(unsigned char *buf, uint32_t len, void *ctx);
 
 /*!
  * Read samples from the device asynchronously. This function will block until

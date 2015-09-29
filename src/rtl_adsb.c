@@ -351,12 +351,14 @@ void messages(uint16_t *buf, int len)
 	}
 }
 
-static void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
+static int rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 {
 	if (do_exit) {
-		return;}
+		return 0;}
 	memcpy(buffer, buf, len);
 	safe_cond_signal(&ready, &ready_m);
+
+    return 0;
 }
 
 static void *demod_thread_fn(void *arg)
