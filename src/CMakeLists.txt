@@ -131,6 +131,7 @@ add_executable(rtl_biast rtl_biast.c)
 add_executable(rtl_raw2wav    rtl_raw2wav.c     convenience/convenience.c  convenience/wavewrite.c)
 add_executable(rtl_wavestat   rtl_wavestat.c    convenience/convenience.c  convenience/waveread.c)
 add_executable(rtl_wavestream rtl_wavestream.c  convenience/convenience.c  convenience/waveread.c)
+set_property(TARGET rtl_tcp PROPERTY C_STANDARD 11)
 
 if (WITH_RPC)
     add_executable(rtl_rpcd rtl_rpcd.c rtlsdr_rpc_msg.c)
