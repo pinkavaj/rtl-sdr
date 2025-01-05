@@ -22,6 +22,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
+#include <stdbool.h>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -92,11 +94,12 @@ static int verbosity = 0;
 static uint32_t bandwidth = 0;
 
 static int enable_biastee = 0;
-static int global_numq = 0;
+static atomic_int global_numq = 0;
 static struct llist *ll_buffers = 0;
 static int llbuf_num = 500;
 
-static volatile int do_exit = 0;
+atomic_bool do_exit = false;
+atomic_bool conn_reset = false;
 
 void usage(void)
 {
@@ -158,7 +161,7 @@ sighandler(int signum)
 {
 	if (CTRL_C_EVENT == signum) {
 		fprintf(stderr, "Signal caught, exiting!\n");
-		do_exit = 1;
+		do_exit = true;
 		rtlsdr_cancel_async(dev);
 		return TRUE;
 	}
@@ -167,15 +170,20 @@ sighandler(int signum)
 #else
 static void sighandler(int signum)
 {
-	fprintf(stderr, "Signal caught, exiting!\n");
+	fprintf(stderr, "Signal (%d) caught, exiting!\n", signum);
+	do_exit = true;
 	rtlsdr_cancel_async(dev);
-	do_exit = 1;
 }
 #endif
 
+static bool may_continue_(void)
+{
+	return !conn_reset && !do_exit;
+}
+
 void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 {
-	if(!do_exit) {
+	if(may_continue_()) {
 		struct llist *rpt = (struct llist*)malloc(sizeof(struct llist));
 		rpt->data = (char*)malloc(len);
 		memcpy(rpt->data, buf, len);
@@ -232,7 +240,7 @@ static void *tcp_worker(void *arg)
 	int r = 0;
 
 	while(1) {
-		if(do_exit)
+		if(!may_continue_())
 			pthread_exit(0);
 
 		pthread_mutex_lock(&ll_mutex);
@@ -266,10 +274,18 @@ static void *tcp_worker(void *arg)
 					bytesleft -= bytessent;
 					index += bytessent;
 				}
-				if(bytessent == SOCKET_ERROR || do_exit) {
-						printf("worker socket bye\n");
-						sighandler(0);
-						pthread_exit(NULL);
+				if(bytessent == SOCKET_ERROR || !may_continue_()) {
+					// cleanup buffers for this socket
+					while (curelem != NULL) {
+						prev = curelem;
+						curelem = curelem->next;
+						free(prev->data);
+						free(prev);
+					}
+					printf("worker socket bye\n");
+					conn_reset = true;
+					rtlsdr_cancel_async(dev);
+					pthread_exit(NULL);
 				}
 			}
 			prev = curelem;
@@ -388,9 +404,10 @@ static void *command_worker(void *arg)
 				}
 				fflush(stdout);
 			}
-			if(received == SOCKET_ERROR || do_exit) {
+			if(received == SOCKET_ERROR || !may_continue_()) {
 				printf("comm recv bye\n");
-				sighandler(0);
+				conn_reset = true;
+				rtlsdr_cancel_async(dev);
 				pthread_exit(NULL);
 			}
 		}
@@ -785,6 +802,7 @@ int main(int argc, char **argv)
 	i = WSAStartup(MAKEWORD(2,2), &wsd);
 #else
 	struct sigaction sigact, sigign;
+	memset(&sigign, 0, sizeof(struct sigaction));
 #endif
 
 	opt_str = "a:p:f:g:s:b:n:d:P:O:TI:W:l:w:D:vr:";
@@ -989,7 +1007,7 @@ int main(int argc, char **argv)
 	r = fcntl(listensocket, F_SETFL, r | O_NONBLOCK);
 #endif
 
-	while(1) {
+	while(!do_exit) {
 		printf("listening...\n");
 		printf("Use the device argument 'rtl_tcp=%s:%d' in OsmoSDR "
 		       "(gr-osmosdr) source\n"
@@ -1004,9 +1022,7 @@ int main(int argc, char **argv)
 			tv.tv_sec = 1;
 			tv.tv_usec = 0;
 			r = select(listensocket+1, &readfds, NULL, NULL, &tv);
-			if(do_exit) {
-				goto out;
-			} else if(r) {
+			if(r) {
 				rlen = sizeof(remote);
 				s = accept(listensocket,(struct sockaddr *)&remote, &rlen);
 				break;
@@ -1063,11 +1079,10 @@ int main(int argc, char **argv)
 			free(prev);
 		}
 
-		do_exit = 0;
+		conn_reset = false;
 		global_numq = 0;
 	}
 
-out:
 	rtlsdr_close(dev);
 	closesocket(listensocket);
 	/* if (port_ir) pthread_join(thread_ir, &status); */
